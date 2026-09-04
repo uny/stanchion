@@ -64,6 +64,9 @@ no secret is reachable from rendered model output.
 
 Read [AGENTS.md](AGENTS.md) first. It is short, and one of its rules is non-negotiable.
 
+[docs/decisions.md](docs/decisions.md) records why the project is shaped as it is, and which
+alternatives were rejected and why. Read it before proposing a different shape.
+
 ## License
 
 Not yet chosen. Tracked as an open decision in the issue tracker.
