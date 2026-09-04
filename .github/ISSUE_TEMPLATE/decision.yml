@@ -1,0 +1,31 @@
+name: Decision
+description: An open choice that blocks or shapes work.
+labels: ["decision"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: The question
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options
+      description: Each with what it costs and what it forecloses.
+    validations:
+      required: true
+  - type: textarea
+    id: default
+    attributes:
+      label: Default if unanswered
+      description: What happens if this is never decided. Every decision has one; state it.
+    validations:
+      required: true
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Context hygiene
+      options:
+        - label: This issue contains no employer, client, tenant, host, ID, or credential.
+          required: true

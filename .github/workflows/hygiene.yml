@@ -1,0 +1,15 @@
+name: hygiene
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  no-organisational-context:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for credential and tenant-shaped strings
+        run: bash .github/scripts/hygiene.sh

@@ -1,0 +1,35 @@
+name: Task
+description: A shippable unit of work.
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write this so someone with no memory of the conversation that produced it can act on
+        it. See AGENTS.md section 1 before you type anything into the fields below.
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be true when this is done.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: What the solution must respect. Security boundaries, existing interfaces, non-goals.
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: How the result is judged. Prefer something observable over something felt.
+    validations:
+      required: true
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Context hygiene
+      options:
+        - label: This issue contains no employer, client, tenant, host, ID, or credential.
+          required: true

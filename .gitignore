@@ -1,0 +1,20 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# macOS
+.DS_Store
+
+# Local configuration and anything credential-bearing
+.env
+.env.*
+*.local

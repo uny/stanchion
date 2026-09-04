@@ -1,0 +1,34 @@
+name: Bug
+description: Something behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reduce the report to a generic reproduction before filing. If it only reproduces
+        against one deployment, file the generic symptom and keep the specifics out of the
+        tracker entirely. See AGENTS.md section 1.
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Use placeholder hosts, IDs and keys. Scrub any log you paste.
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Context hygiene
+      options:
+        - label: This report contains no employer, client, tenant, host, ID, or credential, and any log is scrubbed.
+          required: true
