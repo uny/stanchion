@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The only capability the WebView holds. It carries no filesystem, network or shell permission: each of those arrives later as an explicit named command on the core.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

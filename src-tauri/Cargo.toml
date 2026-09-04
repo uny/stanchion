@@ -1,0 +1,18 @@
+[package]
+name = "stanchion"
+version = "0.0.0"
+description = "An agentic coding GUI for OpenAI-compatible gateways"
+edition = "2021"
+rust-version = "1.82"
+publish = false
+
+[lib]
+# The binary is a thin wrapper, so the core stays linkable from integration tests. macOS is
+# the only target, so no staticlib/cdylib output for mobile is built here.
+name = "stanchion_lib"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
