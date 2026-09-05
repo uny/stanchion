@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The only capability the WebView holds. Filesystem, network and shell each arrive later as an explicit named command on the core. `core:default` is Tauri's aggregate of the core plugin defaults, so it is wider than this application needs: it also grants absolute-path resolution (core:path), event emission, and the whole menu and tray command set. It grants no file read today only because core:image's from_path and from_bytes are compiled out while the image-png and image-ico Cargo features are off — enabling either, which setting a PNG tray icon would, turns from_path into an unscoped read without this file changing. Narrow this to an enumerated set before the WebView renders model output.",
+  "description": "The only capability the WebView holds, and it is deliberately empty. A command the application itself registers is not gated by the ACL while the app declares no permission manifest of its own, so `core_version` and every later core command reach the WebView without anything being granted here. This list is therefore the set of TAURI-provided commands the frontend may call, and nothing yet needs one. Each entry added is a widening that AGENTS.md section 5 requires the pull request to state. `core:default` in particular is not that entry: it is Tauri's aggregate of every core plugin default, which would grant absolute-path resolution, event listen and emit, and the whole menu and tray command set at once — and would leave `core:image`'s from_path inert only for as long as the image-png and image-ico Cargo features stay off, so that setting a PNG tray icon would turn it into an unscoped file read without this file changing.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": []
 }
