@@ -1,0 +1,58 @@
+name: build
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+# Supersede a branch's own in-flight runs. The push and pull_request runs of the same
+# commit land in different groups and both still run; issue #2 asks for a green build on a
+# push, so the trigger set stays as it is.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck and build the frontend
+        run: pnpm build
+
+      - name: Check Rust formatting
+        run: cargo fmt --check
+        working-directory: src-tauri
+
+      - name: Lint the core
+        run: cargo clippy --locked --all-targets -- -D warnings
+        working-directory: src-tauri
+
+      # Runs zero tests today. It is here so the first test added actually executes:
+      # --all-targets above compiles test targets but never runs them.
+      - name: Test the core
+        run: cargo test --locked
+        working-directory: src-tauri
+
+      - name: Build the application
+        run: pnpm tauri build --no-bundle

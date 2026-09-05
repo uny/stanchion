@@ -60,6 +60,18 @@ diff rendering and sandboxed HTML preview tractable for one developer. The Rust 
 the credential lifecycle, the agent loop, filesystem access and MCP process supervision, so
 no secret is reachable from rendered model output.
 
+## Development
+
+macOS, with a Rust toolchain, Node 24 and pnpm.
+
+```sh
+pnpm install
+pnpm tauri dev            # opens the window against the Vite dev server
+pnpm tauri build --no-bundle
+```
+
+The Rust core lives in `src-tauri`; `cargo fmt` and `cargo clippy` run from there.
+
 ## Contributing
 
 Read [AGENTS.md](AGENTS.md) first. It is short, and one of its rules is non-negotiable.
