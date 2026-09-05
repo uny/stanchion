@@ -9,7 +9,7 @@ permissions:
 # commit land in different groups and both still run; issue #2 asks for a green build on a
 # push, so the trigger set stays as it is.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -48,7 +48,8 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
         working-directory: src-tauri
 
-      # --all-targets above compiles the test targets; only this runs their assertions.
+      # Runs zero tests today. It is here so the first test added actually executes:
+      # --all-targets above compiles test targets but never runs them.
       - name: Test the core
         run: cargo test --locked
         working-directory: src-tauri
