@@ -10,6 +10,9 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 1420,
     strictPort: true,
+    // The Vite root is the repository root, so the Cargo target directory sits inside it.
+    // Every cargo rebuild writes thousands of files there; none of them are frontend input.
+    watch: { ignored: ["**/src-tauri/**"] },
   },
   build: {
     outDir: "dist",
