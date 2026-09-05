@@ -5,6 +5,13 @@ on: [push, pull_request]
 permissions:
   contents: read
 
+# Supersede a branch's own in-flight runs. The push and pull_request runs of the same
+# commit land in different groups and both still run; issue #2 asks for a green build on a
+# push, so the trigger set stays as it is.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   macos:
     runs-on: macos-latest
@@ -38,7 +45,12 @@ jobs:
         working-directory: src-tauri
 
       - name: Lint the core
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+        working-directory: src-tauri
+
+      # --all-targets above compiles the test targets; only this runs their assertions.
+      - name: Test the core
+        run: cargo test --locked
         working-directory: src-tauri
 
       - name: Build the application
