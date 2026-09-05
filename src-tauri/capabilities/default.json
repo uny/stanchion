@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The only capability the WebView holds. It carries no filesystem, network or shell permission: each of those arrives later as an explicit named command on the core.",
+  "description": "The only capability the WebView holds. Filesystem, network and shell each arrive later as an explicit named command on the core. `core:default` is Tauri's aggregate of the core plugin defaults, so it is wider than this application needs: it also grants absolute-path resolution (core:path), event emission, and the whole menu and tray command set. It grants no file read today only because core:image's from_path and from_bytes are compiled out while the image-png and image-ico Cargo features are off — enabling either, which setting a PNG tray icon would, turns from_path into an unscoped read without this file changing. Narrow this to an enumerated set before the WebView renders model output.",
   "windows": ["main"],
   "permissions": ["core:default"]
 }
