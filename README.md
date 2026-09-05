@@ -55,10 +55,16 @@ Early. Nothing is usable yet. The issue tracker holds the current milestone.
 
 Tauri 2 — a Rust core with a TypeScript/React frontend.
 
-The frontend runs in a system WebView, which is what makes Markdown, syntax highlighting,
-diff rendering and sandboxed HTML preview tractable for one developer. The Rust core owns
-the credential lifecycle, the agent loop, filesystem access and MCP process supervision, so
-no secret is reachable from rendered model output.
+The frontend runs in a system WebView. The reason is text editing: a WebView inherits the
+platform's own editing contract — modifier-aware deletion, dictionary lookup, spell check,
+the emoji picker — which a native toolkit reimplements one key at a time. Markdown,
+highlighting and diff rendering have native Rust answers and are not the reason. See
+[docs/decisions.md](docs/decisions.md).
+
+That choice means model-produced text is rendered inside a browser engine, so the frontend
+is treated as untrusted. The Rust core owns the credential lifecycle, the agent loop,
+filesystem access and MCP process supervision, and reaches the frontend only through named
+IPC commands it can refuse — so no secret is reachable from rendered model output.
 
 ## Contributing
 

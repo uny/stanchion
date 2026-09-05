@@ -18,24 +18,54 @@ for one family degrades when pointed at another.
 
 **Rules out:** competing on chat UX, conversation features, or breadth of provider support.
 
-## Tauri 2 rather than a JVM-based desktop toolkit
+## Tauri 2 rather than a native or JVM desktop toolkit
 
-The hardest rendering work in this application — Markdown, syntax highlighting, diff review,
-sandboxed HTML preview — is solved by the web ecosystem and unsolved elsewhere.
+The reason is the platform's text-editing contract, not rendering.
+
+This application is mostly a long editable transcript, and on macOS an editable field is
+expected to honour a long tail of behaviour: Cmd+Delete, Option+Delete, Ctrl+A/E/K,
+dictionary lookup, spell check, the emoji picker, Services. No single feature request covers
+that tail, but users feel every gap in it. A system WebView inherits the whole contract. A
+native toolkit reimplements it one key at a time.
+
+That was measured rather than assumed. In `iced` 0.14,
+`iced_widget/src/text_editor.rs:1211` maps `Key::Named(Backspace)` without consulting
+modifiers, so Cmd+Delete and Option+Delete both collapse into deleting a single character.
+Twelve lines below, at 1228-1242, the arrow keys *do* branch on `macos_command()` and
+`jump()` — so the gap is missing work rather than a design stance, and there is no way to
+know from outside which of the remaining behaviours are present. Two minutes of ordinary
+typing hit one.
+
+Secondary: selection that runs in one pass across heterogeneous content — prose, code and
+diff hunks in the same transcript.
 
 Compose Multiplatform was evaluated and rejected: the JVM has no built-in web engine, the
 de-facto embedding library's CEF backend has had maintenance discontinued, and an official
-WebView component remains an open feature request. Long-form CJK text input and selection
-across a long transcript is also a known weak area there, whereas a system WebView inherits
-the platform's own behaviour.
+WebView component remains an open feature request.
+
+**Rejected as reasons — these were believed, then tested, and do not support the decision:**
+
+- *Markdown, syntax highlighting and diff review are solved by the web and unsolved
+  elsewhere.* Three of the four are wrong: `pulldown-cmark`, `syntect`, `tree-sitter` and
+  `similar` cover them natively.
+- *Sandboxed HTML preview requires a WebView frontend.* It requires one window with its
+  capabilities emptied. A fully native application could embed a single `WKWebView` for it.
+- *Native toolkits handle long-form CJK input badly.* Tested and false. `iced` composes
+  inline, puts the candidate window under the caret, allows clause movement and resizing,
+  and holds state over long input. **Do not reopen this decision from the input-method
+  angle** — it will not survive contact with the evidence, and the decision does not rest
+  on it.
 
 **Rules out:** sharing UI code with a mobile target.
 
-## The WebView boundary is a security boundary
+## The WebView is the risk; the IPC boundary is what contains it
 
-The frontend renders text a model produced, so it is untrusted. It holds no credential,
-opens no socket to the gateway, and touches no files. Every capability it has is a named IPC
-command the core can refuse.
+Embedding a browser engine to get the editing contract means rendering model-produced text
+inside a full browser engine. That is the cost of the decision above, not a benefit of it,
+and the boundary is what pays it down.
+
+The frontend is untrusted. It holds no credential, opens no socket to the gateway, and
+touches no files. Every capability it has is a named IPC command the core can refuse.
 
 **Rules out:** convenience shortcuts that let the frontend call the gateway or the
 filesystem directly. Any change that widens this must say so in its pull request.
