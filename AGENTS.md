@@ -67,3 +67,18 @@ written to disk, never logged, and never included in crash reports or telemetry.
 
 Rendered model output runs with no path to the credential store. Any change that widens what
 the WebView can reach is a security change and must say so in its pull request.
+
+**The application command ACL is fail-open until it is switched on.** With no application
+permission manifest, Tauri does not merely grant nothing — it skips the allow-list filter
+entirely, and *every* `#[tauri::command]` the application registers is callable from the
+frontend. `tauri-macros/src/command/handler.rs` returns early on exactly that path ("All
+application commands are allowed if we don't have an application ACL"), and
+`tauri-build/src/acl.rs` registers an app manifest only once it actually yields permissions.
+
+This is the live state, not a future hazard: `src-tauri/build.rs` calls bare
+`tauri_build::build()`, and `core_version` already reaches the WebView through it. The
+description in `src-tauri/capabilities/default.json` records the same fact — that file's
+empty `permissions` list is therefore the set of *Tauri-provided* commands the frontend may
+call, and says nothing about the application's own. A pull request that adds a command must
+pass `AppManifest::commands(...)` or state why it does not. `WindowsAttributes::app_manifest`
+is an unrelated Windows XML manifest and is not this.
