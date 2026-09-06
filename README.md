@@ -12,14 +12,20 @@ Existing desktop LLM clients fall into two groups, and neither covers this groun
 - **Chat clients** (LibreChat, Cherry Studio, Witsy, 5ire, Open WebUI) point at a custom base
   URL and hold a conversation, but they are not agentic coding environments: no workspace, no
   tool-call loop over your files, no approval flow, no diff review.
-- **Agentic coding clients** are tuned for one vendor's model family. Running a different
-  model through a harness whose prompts, tool schemas and recovery behaviour were shaped for
-  another vendor produces a degraded result, and their gateway support assumes a long-lived
-  API key.
+- **Agentic coding clients** are split. Some are tuned for one vendor's model family, and
+  running a different model through a harness whose prompts, tool schemas and recovery
+  behaviour were shaped for another produces a degraded result. But the provider-agnostic
+  ones are neither few nor immature: Goose advertises working with any LLM across 15+
+  providers, OpenCode with 75+, and Continue is provider-agnostic as well. What they share
+  is the assumption that a gateway is reached with a long-lived API key.
 
-stanchion targets the intersection: an **agentic coding GUI** that treats any
-OpenAI-compatible model as a first-class citizen, and that can authenticate to a gateway by
-means other than a static key.
+stanchion targets what that leaves: an **agentic coding GUI** for OpenAI-compatible gateways
+that can authenticate by means other than a static key.
+
+**Being model-agnostic is not the claim.** As of 2026 it is table stakes, and any positioning
+that rests on it is describing the field rather than a difference from it. The credential
+lifecycle below is the difference. The agent loop is how this one is built, not a reason to
+prefer it.
 
 ## The two things that are actually hard
 
@@ -40,11 +46,13 @@ provider with a lifecycle. See [docs/auth.md](docs/auth.md).
 | `oidc_device_code` | interactive device-code flow | refresh token |
 | `oidc_auth_code_pkce` | browser redirect, PKCE | refresh token |
 
-### 2. A model-agnostic agent loop
+### 2. One agent loop that holds up across model families
 
-Tool schemas, system prompts, and the recovery behaviour when a model returns a malformed
-tool call all differ by model family. stanchion keeps one loop and a per-model *profile*
-that adapts it, rather than a loop written for one family and patched for the others.
+Reaching many providers is plumbing, and it is solved. Staying *correct* across families that
+disagree is not: tool schemas, system prompts, and the recovery behaviour when a model returns
+a malformed tool call all differ. stanchion keeps one loop and a per-model *profile* that
+adapts it, rather than a loop written for one family and patched for the others. Whether that
+holds up better than the alternatives is untested — nothing here runs yet.
 See [docs/architecture.md](docs/architecture.md).
 
 ## Status
