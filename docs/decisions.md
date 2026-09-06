@@ -93,6 +93,27 @@ decision:**
 **Rules out:** sharing UI code with a mobile target, and any frontend toolkit that exists on
 only one desktop platform.
 
+## Not evaluated: Electron
+
+Electron is the obvious alternative to Tauri, and this record has never mentioned it. That is
+an omission rather than a rejection: **nothing written here rules Electron out.**
+
+The reason the entry above gives does not distinguish it. Electron bundles Chromium, which
+inherits the platform's text-editing contract for the same reason a system WebView does, and
+it satisfies the cross-platform constraint as well. Neither of the two arguments this project
+actually relies on separates Tauri from Electron.
+
+Whoever closes this should measure rather than argue. The candidate discriminators, none of
+them tested here:
+
+- **Where the privileged side lives.** Tauri's is Rust, reachable from the WebView only
+  through named IPC commands. Electron's is Node in the main process. Whether that is a
+  material difference for a design in which credentials never leave the core, or only a
+  difference of language, has not been examined.
+- **Who patches the engine.** Electron ships a Chromium this project would then have to keep
+  current; a system WebView is patched by the OS vendor, and in exchange varies by OS version.
+- **Distribution size and memory.** The usual grounds, and the least interesting.
+
 ## The WebView is the risk; the IPC boundary is what contains it
 
 Embedding a browser engine to get the editing contract means rendering model-produced text
@@ -118,6 +139,19 @@ gateway, so it cannot serve a desktop client. The providers are implemented here
 token-refreshing sidecar.** That is a real workaround and it works, but it makes the
 distinguishing capability someone else's problem and leaves the product indistinguishable
 from what already exists.
+
+**Not evaluated: contributing this to an existing agent instead of building a client.** If the
+credential lifecycle is the one differentiator, the fair question is why it is not a pull
+request against an agent that already exists. Goose is the obvious candidate — Rust, open
+source, and advertising work with any LLM across 15+ providers — so a credential provider
+could plausibly live there rather than here.
+
+That was never assessed. Nothing was filed upstream, no maintainer was asked, and no attempt
+was made to size what a provider-with-a-lifecycle would touch in someone else's codebase. The
+question that would settle it is whether the upstream project models a credential as anything
+more than a string it reads once at startup; if it does not, the change is architectural
+rather than additive, which is the usual reason such a contribution is refused. **Unknown, and
+recorded as unknown.**
 
 ## One agent loop, with model differences pushed into profiles
 
