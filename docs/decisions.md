@@ -18,7 +18,7 @@ for one family degrades when pointed at another.
 
 **Rules out:** competing on chat UX, conversation features, or breadth of provider support.
 
-## Tauri 2 rather than a custom-drawn or JVM desktop toolkit
+## Tauri 2 rather than a custom-drawn, native or JVM desktop toolkit
 
 The reason is the platform's text-editing contract, not rendering.
 
@@ -47,8 +47,10 @@ was taken on Windows or Linux.
 lead where leading costs nothing, but a frontend that cannot follow to Windows and Linux is
 out. That, not the measurement above, is what rules out an AppKit/SwiftUI frontend: it
 inherits the macOS editing contract as well as a WebView does, and inherits nothing anywhere
-else. A system WebView inherits *each* platform's own contract — that is the property being
-bought, and it is why the macOS-only measurement is enough to make the point.
+else. The macOS-only measurement is still enough, but because of the constraint rather than
+anything measured about WebViews elsewhere: a frontend that fails the editing contract on
+any one required platform is disqualified, so one platform suffices to disqualify. What a
+system WebView inherits on Windows and Linux was not measured here.
 
 Secondary, and untested: selection that runs in one pass across heterogeneous content —
 prose, code and diff hunks in the same transcript. Recorded as a hypothesis, not a reason.
@@ -56,10 +58,15 @@ prose, code and diff hunks in the same transcript. Recorded as a hypothesis, not
 Compose Multiplatform was evaluated and rejected: the JVM has no built-in web engine, the
 de-facto embedding library's CEF backend has had maintenance discontinued, and an official
 WebView component remains an open feature request. Those three grounds are all about
-embedding a web engine, which this entry no longer treats as the deciding factor — but
-Compose Desktop also draws its own text widgets, through Skia, so it falls under the same
-editing-contract evidence as `iced`. **The web-engine grounds are unpinned — no library
-named, no dates, no link — and were not re-checked in this pass.**
+embedding a web engine, which this entry no longer treats as the deciding factor, and
+they are unpinned — no library named, no dates, no link — and were not re-checked here.
+**So Compose's rejection currently rests on nothing this entry still uses.** What does
+apply is the cross-platform constraint above, which Compose satisfies; the editing-contract
+argument does *not* transfer to it. Compose Desktop draws its own text widgets through
+Skia, but its macOS key mapping handles the case `iced` misses:
+`compose-multiplatform-core`, `KeyMapping.skiko.kt:62-73`, maps `Key.Backspace` with `Meta`
+to `DELETE_FROM_LINE_START` and with `Alt` to `DELETE_PREV_WORD`. **Anyone reopening Compose
+should start there: the recorded grounds are stale, not the toolkit.**
 
 **Rejected as reasons — these were believed, then re-examined, and do not support the
 decision:**
