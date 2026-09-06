@@ -18,7 +18,7 @@ for one family degrades when pointed at another.
 
 **Rules out:** competing on chat UX, conversation features, or breadth of provider support.
 
-## Tauri 2 rather than a native or JVM desktop toolkit
+## Tauri 2 rather than a custom-drawn or JVM desktop toolkit
 
 The reason is the platform's text-editing contract, not rendering.
 
@@ -26,35 +26,57 @@ This application is mostly a long editable transcript, and on macOS an editable 
 expected to honour a long tail of behaviour: Cmd+Delete, Option+Delete, Ctrl+A/E/K,
 dictionary lookup, spell check, the emoji picker, Services. No single feature request covers
 that tail, but users feel every gap in it. A system WebView inherits the whole contract. A
-native toolkit reimplements it one key at a time.
+toolkit that draws its own text widgets reimplements it one key at a time.
 
-That was measured rather than assumed. In `iced` 0.14,
-`iced_widget/src/text_editor.rs:1211` maps `Key::Named(Backspace)` without consulting
-modifiers, so Cmd+Delete and Option+Delete both collapse into deleting a single character.
-Twelve lines below, at 1228-1242, the arrow keys *do* branch on `macos_command()` and
-`jump()` — so the gap is missing work rather than a design stance, and there is no way to
-know from outside which of the remaining behaviours are present. Two minutes of ordinary
-typing hit one.
+That was read out of the source rather than assumed. In `iced_widget` 0.14.0-0.14.2
+(`widget/src/text_editor.rs` upstream; `iced_widget/src/text_editor.rs` in the crates.io
+layout), line 1211 maps `Key::Named(Backspace)` without consulting modifiers, so Cmd+Delete
+and Option+Delete both collapse into deleting a single character. Seventeen lines below, at
+1228-1242, the arrow keys *do* branch on `macos_command()` and `jump()` — so the gap is
+missing work rather than a design stance, and the extent of what else is missing is not
+knowable without auditing the whole widget. The line numbers are identical in all three
+published 0.14.x releases; 0.14.2 is the latest.
 
-Secondary: selection that runs in one pass across heterogeneous content — prose, code and
-diff hunks in the same transcript.
+**What that evidence does and does not cover.** It covers toolkits that draw their own text
+widgets: `iced` renders through `wgpu`/`tiny-skia` and never touches `NSTextView`. It says
+nothing about a native-widget toolkit — AppKit and SwiftUI inherit the same editing contract
+a WebView does, and for the same reason. **What rules out an AppKit/SwiftUI frontend is not
+recorded here, and this entry must not be cited as though it were.** The evidence is also
+macOS-only, and the repository does not state its target platforms; no equivalent
+measurement exists for Windows or Linux.
+
+Secondary, and untested: selection that runs in one pass across heterogeneous content —
+prose, code and diff hunks in the same transcript. Recorded as a hypothesis, not a reason.
 
 Compose Multiplatform was evaluated and rejected: the JVM has no built-in web engine, the
 de-facto embedding library's CEF backend has had maintenance discontinued, and an official
-WebView component remains an open feature request.
+WebView component remains an open feature request. Those three grounds are all about
+embedding a web engine, which this entry no longer treats as the deciding factor — but
+Compose Desktop also draws its own text widgets, through Skia, so it falls under the same
+editing-contract evidence as `iced`. **The web-engine grounds are unpinned — no library
+named, no dates, no link — and were not re-checked in this pass.**
 
-**Rejected as reasons — these were believed, then tested, and do not support the decision:**
+**Rejected as reasons — these were believed, then re-examined, and do not support the
+decision:**
 
 - *Markdown, syntax highlighting and diff review are solved by the web and unsolved
-  elsewhere.* Three of the four are wrong: `pulldown-cmark`, `syntect`, `tree-sitter` and
-  `similar` cover them natively.
-- *Sandboxed HTML preview requires a WebView frontend.* It requires one window with its
-  capabilities emptied. A fully native application could embed a single `WKWebView` for it.
-- *Native toolkits handle long-form CJK input badly.* Tested and false. `iced` composes
-  inline, puts the candidate window under the caret, allows clause movement and resizing,
-  and holds state over long input. **Do not reopen this decision from the input-method
-  angle** — it will not survive contact with the evidence, and the decision does not rest
-  on it.
+  elsewhere.* All three are wrong about the underlying work: `pulldown-cmark`, `syntect`,
+  `tree-sitter` and `similar` cover parsing, highlighting and diffing natively. They do not
+  supply the review *interface* built on top of them — that cost is real, but it is ordinary
+  UI work rather than something only a web stack can do.
+- *Sandboxed HTML preview requires a WebView frontend.* It requires one window that can reach
+  neither the core nor the network. Emptied Tauri capabilities scope which commands that
+  window may invoke; they do not stop model-generated HTML fetching remote resources, which
+  takes a restrictive CSP — both are needed, and neither has been implemented. A fully
+  native macOS application could host that one window in a `WKWebView`; the Windows and
+  Linux equivalents were not investigated.
+- *Long-form CJK input is a weak area outside a system WebView.* Tested against `iced` only,
+  and false there: it composes inline, puts the candidate window under the caret, allows
+  clause movement and resizing, and holds state over long input. The claim being retired
+  was originally made about Compose Multiplatform, which was **not** re-tested — nor were
+  GTK or Qt, nor any OS or IME other than the one used. So this is not a reason to choose a
+  WebView, and equally not evidence that another toolkit is fine. The decision does not
+  rest on it either way; a reproduction against a specific toolkit is still worth filing.
 
 **Rules out:** sharing UI code with a mobile target.
 
