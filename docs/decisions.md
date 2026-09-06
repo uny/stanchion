@@ -40,10 +40,15 @@ published 0.14.x releases; 0.14.2 is the latest.
 **What that evidence does and does not cover.** It covers toolkits that draw their own text
 widgets: `iced` renders through `wgpu`/`tiny-skia` and never touches `NSTextView`. It says
 nothing about a native-widget toolkit — AppKit and SwiftUI inherit the same editing contract
-a WebView does, and for the same reason. **What rules out an AppKit/SwiftUI frontend is not
-recorded here, and this entry must not be cited as though it were.** The evidence is also
-macOS-only, and the repository does not state its target platforms; no equivalent
-measurement exists for Windows or Linux.
+a WebView does, and for the same reason. The measurement is also macOS-only; no equivalent
+was taken on Windows or Linux.
+
+**The constraint that closes that gap: stanchion is cross-platform by default.** macOS may
+lead where leading costs nothing, but a frontend that cannot follow to Windows and Linux is
+out. That, not the measurement above, is what rules out an AppKit/SwiftUI frontend: it
+inherits the macOS editing contract as well as a WebView does, and inherits nothing anywhere
+else. A system WebView inherits *each* platform's own contract — that is the property being
+bought, and it is why the macOS-only measurement is enough to make the point.
 
 Secondary, and untested: selection that runs in one pass across heterogeneous content —
 prose, code and diff hunks in the same transcript. Recorded as a hypothesis, not a reason.
@@ -78,7 +83,8 @@ decision:**
   WebView, and equally not evidence that another toolkit is fine. The decision does not
   rest on it either way; a reproduction against a specific toolkit is still worth filing.
 
-**Rules out:** sharing UI code with a mobile target.
+**Rules out:** sharing UI code with a mobile target, and any frontend toolkit that exists on
+only one desktop platform.
 
 ## The WebView is the risk; the IPC boundary is what contains it
 
