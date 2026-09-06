@@ -32,27 +32,24 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       - run: pnpm install --frozen-lockfile
 
       - name: Typecheck and build the frontend
         run: pnpm build
 
+      # Cargo runs from the workspace root so that crates/core is covered too, not just
+      # the Tauri shell. --workspace is explicit rather than implied by the root manifest.
       - name: Check Rust formatting
-        run: cargo fmt --check
-        working-directory: src-tauri
+        run: cargo fmt --all --check
 
-      - name: Lint the core
-        run: cargo clippy --locked --all-targets -- -D warnings
-        working-directory: src-tauri
+      - name: Lint the workspace
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       # Runs zero tests today. It is here so the first test added actually executes:
       # --all-targets above compiles test targets but never runs them.
-      - name: Test the core
-        run: cargo test --locked
-        working-directory: src-tauri
+      - name: Test the workspace
+        run: cargo test --locked --workspace
 
       - name: Build the application
         run: pnpm tauri build --no-bundle

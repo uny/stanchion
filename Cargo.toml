@@ -1,0 +1,13 @@
+# The workspace exists to keep the core honest. `crates/core` holds everything that is not
+# the user interface and must not depend on `tauri`; `src-tauri` is the IPC boundary and
+# nothing else. `docs/architecture.md` describes that split, and splitting the crates is
+# what turns the description into something the compiler checks.
+[workspace]
+members = ["crates/core", "src-tauri"]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false

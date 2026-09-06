@@ -1,0 +1,10 @@
+[package]
+name = "stanchion-core"
+description = "The credential lifecycle, transport and agent loop, independent of any frontend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Deliberately empty, and `tauri` in particular must never appear here. See the crate docs.
+[dependencies]
