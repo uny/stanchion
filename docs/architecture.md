@@ -5,7 +5,7 @@
 ```
 ┌─────────────────────────────────────────────┐
 │  WebView (TypeScript / React)               │
-│  conversation · diff review · approvals     │
+│  conversation · diff review · approval UI   │
 │  markdown · syntax highlighting             │
 │  no credentials, no filesystem, no network  │
 └───────────────────┬─────────────────────────┘
@@ -24,10 +24,14 @@
 └─────────────────────────────────────────────┘
 ```
 
-The split is a security boundary, not only a layering preference. The WebView renders text
-that a model produced, so it is treated as untrusted. It never holds a credential, never
-opens a socket to the gateway, and never touches the filesystem directly. Every capability
-it has is a named IPC command the core can refuse.
+The split is a security boundary, not only a layering preference — but the WebView is the
+risk it contains, not a component that supplies safety. It renders text that a model
+produced, so it is treated as untrusted. It never holds a credential, never opens a socket to
+the gateway, and never touches the filesystem directly. Every capability it has is a named
+IPC command the core can refuse.
+
+That last sentence controls *which* commands are reachable. It says nothing about *who*
+caused a call, which is a separate problem — see the approval rule below.
 
 ## The agent loop
 
@@ -66,6 +70,14 @@ directory, search, run a shell command. Everything else arrives through MCP.
 Each tool declares a risk class. Reads inside the workspace run without asking. Writes show a
 diff and wait. Shell commands wait, and the approval carries the exact command. Approvals are
 per-invocation by default, with opt-in rules the user writes, never rules the model proposes.
+
+**An IPC message is not consent.** The approval UI is rendered in the WebView, which is the
+untrusted surface. Model output that achieves script execution there can invoke any command
+the frontend is allowed to invoke, and the core cannot tell a scripted call from a click — so
+a bare `approve(tool_call_id)` command would let a model approve its own shell command. The
+core must require something the WebView cannot forge before it executes an approved call.
+Which mechanism supplies that is open (issue #21); no design that takes the frontend's word
+for it is acceptable.
 
 The workspace root is the boundary for filesystem tools. Paths that escape it are refused by
 the core, not by the prompt.
