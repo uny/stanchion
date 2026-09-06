@@ -18,24 +18,89 @@ for one family degrades when pointed at another.
 
 **Rules out:** competing on chat UX, conversation features, or breadth of provider support.
 
-## Tauri 2 rather than a JVM-based desktop toolkit
+## Tauri 2 rather than a custom-drawn, native or JVM desktop toolkit
 
-The hardest rendering work in this application — Markdown, syntax highlighting, diff review,
-sandboxed HTML preview — is solved by the web ecosystem and unsolved elsewhere.
+The reason is the platform's text-editing contract, not rendering.
+
+This application is mostly a long editable transcript, and on macOS an editable field is
+expected to honour a long tail of behaviour: Cmd+Delete, Option+Delete, Ctrl+A/E/K,
+dictionary lookup, spell check, the emoji picker, Services. No single feature request covers
+that tail, but users feel every gap in it. A system WebView inherits the whole contract. A
+toolkit that draws its own text widgets reimplements it one key at a time.
+
+That was read out of the source rather than assumed. In `iced_widget` 0.14.0-0.14.2
+(`widget/src/text_editor.rs` upstream; `iced_widget/src/text_editor.rs` in the crates.io
+layout), line 1211 maps `Key::Named(Backspace)` without consulting modifiers, so Cmd+Delete
+and Option+Delete both collapse into deleting a single character. Seventeen lines below, at
+1228-1242, the arrow keys *do* branch on `macos_command()` and `jump()` — so the gap is
+missing work rather than a design stance, and the extent of what else is missing is not
+knowable without auditing the whole widget. The line numbers are identical in all three
+published 0.14.x releases; 0.14.2 is the latest.
+
+**What that evidence does and does not cover.** It covers toolkits that draw their own text
+widgets: `iced` renders through `wgpu`/`tiny-skia` and never touches `NSTextView`. It says
+nothing about a native-widget toolkit — AppKit and SwiftUI inherit the same editing contract
+a WebView does, and for the same reason. The measurement is also macOS-only; no equivalent
+was taken on Windows or Linux.
+
+**The constraint that closes that gap: stanchion is cross-platform by default.** macOS may
+lead where leading costs nothing, but a frontend that cannot follow to Windows and Linux is
+out. That, not the measurement above, is what rules out an AppKit/SwiftUI frontend: it
+inherits the macOS editing contract as well as a WebView does, and inherits nothing anywhere
+else. The macOS-only measurement is still enough, but because of the constraint rather than
+anything measured about WebViews elsewhere: a frontend that fails the editing contract on
+any one required platform is disqualified, so one platform suffices to disqualify. What a
+system WebView inherits on Windows and Linux was not measured here.
+
+Secondary, and untested: selection that runs in one pass across heterogeneous content —
+prose, code and diff hunks in the same transcript. Recorded as a hypothesis, not a reason.
 
 Compose Multiplatform was evaluated and rejected: the JVM has no built-in web engine, the
 de-facto embedding library's CEF backend has had maintenance discontinued, and an official
-WebView component remains an open feature request. Long-form CJK text input and selection
-across a long transcript is also a known weak area there, whereas a system WebView inherits
-the platform's own behaviour.
+WebView component remains an open feature request. Those three grounds are all about
+embedding a web engine, which this entry no longer treats as the deciding factor, and
+they are unpinned — no library named, no dates, no link — and were not re-checked here.
+**So Compose's rejection currently rests on nothing this entry still uses.** What does
+apply is the cross-platform constraint above, which Compose satisfies; the editing-contract
+argument does *not* transfer to it. Compose Desktop draws its own text widgets through
+Skia, but its macOS key mapping handles the case `iced` misses:
+`compose-multiplatform-core`, `KeyMapping.skiko.kt:62-73`, maps `Key.Backspace` with `Meta`
+to `DELETE_FROM_LINE_START` and with `Alt` to `DELETE_PREV_WORD`. **Anyone reopening Compose
+should start there: the recorded grounds are stale, not the toolkit.**
 
-**Rules out:** sharing UI code with a mobile target.
+**Rejected as reasons — these were believed, then re-examined, and do not support the
+decision:**
 
-## The WebView boundary is a security boundary
+- *Markdown, syntax highlighting and diff review are solved by the web and unsolved
+  elsewhere.* All three are wrong about the underlying work: `pulldown-cmark`, `syntect`,
+  `tree-sitter` and `similar` cover parsing, highlighting and diffing natively. They do not
+  supply the review *interface* built on top of them — that cost is real, but it is ordinary
+  UI work rather than something only a web stack can do.
+- *Sandboxed HTML preview requires a WebView frontend.* It requires one window that can reach
+  neither the core nor the network. Emptied Tauri capabilities scope which commands that
+  window may invoke; they do not stop model-generated HTML fetching remote resources, which
+  takes a restrictive CSP — both are needed, and neither has been implemented. A fully
+  native macOS application could host that one window in a `WKWebView`; the Windows and
+  Linux equivalents were not investigated.
+- *Long-form CJK input is a weak area outside a system WebView.* Tested against `iced` only,
+  and false there: it composes inline, puts the candidate window under the caret, allows
+  clause movement and resizing, and holds state over long input. The claim being retired
+  was originally made about Compose Multiplatform, which was **not** re-tested — nor were
+  GTK or Qt, nor any OS or IME other than the one used. So this is not a reason to choose a
+  WebView, and equally not evidence that another toolkit is fine. The decision does not
+  rest on it either way; a reproduction against a specific toolkit is still worth filing.
 
-The frontend renders text a model produced, so it is untrusted. It holds no credential,
-opens no socket to the gateway, and touches no files. Every capability it has is a named IPC
-command the core can refuse.
+**Rules out:** sharing UI code with a mobile target, and any frontend toolkit that exists on
+only one desktop platform.
+
+## The WebView is the risk; the IPC boundary is what contains it
+
+Embedding a browser engine to get the editing contract means rendering model-produced text
+inside a full browser engine. That is the cost of the decision above, not a benefit of it,
+and the boundary is what pays it down.
+
+The frontend is untrusted. It holds no credential, opens no socket to the gateway, and
+touches no files. Every capability it has is a named IPC command the core can refuse.
 
 **Rules out:** convenience shortcuts that let the frontend call the gateway or the
 filesystem directly. Any change that widens this must say so in its pull request.
