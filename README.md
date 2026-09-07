@@ -16,8 +16,11 @@ Existing desktop LLM clients fall into two groups, and neither covers this groun
   running a different model through a harness whose prompts, tool schemas and recovery
   behaviour were shaped for another produces a degraded result. But the provider-agnostic
   ones are neither few nor immature: Goose advertises working with any LLM across 15+
-  providers, OpenCode with 75+, and Continue is provider-agnostic as well. What they share
-  is the assumption that a gateway is reached with a long-lived API key.
+  providers, OpenCode with 75+, and Continue is provider-agnostic as well. Nor do all of
+  them assume a static key: Goose ships a device-code flow for GitHub Copilot and OAuth
+  PKCE for Databricks. But that lifecycle exists only for providers they implement
+  first-hand. Point any of them at a *generic* OpenAI-compatible endpoint and the
+  credential is a long-lived API key again.
 
 stanchion targets what that leaves: an **agentic coding GUI** for OpenAI-compatible gateways
 that can authenticate by means other than a static key.

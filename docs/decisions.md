@@ -12,11 +12,17 @@ Chat clients for custom gateways are a solved and crowded space: LibreChat, Cher
 Witsy, 5ire and Open WebUI are all free, mature, and point at a custom base URL. There is no
 defensible reason to add another.
 
-The gap is one layer up. Agentic coding clients are tuned for a single vendor's model
-family, and a harness whose prompts, tool schemas and malformed-output recovery were shaped
-for one family degrades when pointed at another.
+The gap is one layer up — though not where this entry originally put it. "Agentic coding
+clients are tuned for a single vendor's model family" was re-checked and is false as a
+description of the field: Goose, OpenCode and Continue are all provider-agnostic, and some
+already authenticate without a static key for the providers they implement first-hand. What
+none of them offers is that credential lifecycle against a *generic* OpenAI-compatible
+endpoint, and that is the actual gap. Prompts, tool schemas and malformed-output recovery do
+still differ by family and one harness still has to absorb that — but that is how this client
+is built, not why it exists. See `README.md`.
 
-**Rules out:** competing on chat UX, conversation features, or breadth of provider support.
+**Rules out:** competing on chat UX, conversation features, or breadth of provider support —
+and equally, resting the case for this project on model-agnosticism, which is table stakes.
 
 ## Tauri 2 rather than a custom-drawn, native or JVM desktop toolkit
 
@@ -77,9 +83,14 @@ decision:**
   supply the review *interface* built on top of them — that cost is real, but it is ordinary
   UI work rather than something only a web stack can do.
 - *Sandboxed HTML preview requires a WebView frontend.* It requires one window that can reach
-  neither the core nor the network. Emptied Tauri capabilities scope which commands that
-  window may invoke; they do not stop model-generated HTML fetching remote resources, which
-  takes a restrictive CSP — both are needed, and neither has been implemented. A fully
+  neither the core nor the network. An emptied Tauri capability does **not** supply the first
+  half: while the application declares no permission manifest the ACL is skipped for
+  application commands altogether, so an emptied capability scopes only the Tauri-provided
+  ones and such a window could still invoke every command the core registers (AGENTS.md
+  section 5). Capabilities also do not stop model-generated HTML fetching remote resources,
+  which takes a restrictive CSP; `src-tauri/tauri.conf.json` does set one, but it is global
+  rather than a policy for an isolated preview window. Both halves are needed and neither is
+  in place for such a window. A fully
   native macOS application could host that one window in a `WKWebView`; the Windows and
   Linux equivalents were not investigated.
 - *Long-form CJK input is a weak area outside a system WebView.* Tested against `iced` only,
@@ -117,7 +128,8 @@ them tested here:
 ## The WebView is the risk; the IPC boundary is what contains it
 
 Embedding a browser engine to get the editing contract means rendering model-produced text
-inside a full browser engine. That is the cost of the decision above, not a benefit of it,
+inside a full browser engine. That is the cost of choosing Tauri 2 for the text-editing
+contract, not a benefit of it,
 and the boundary is what pays it down.
 
 The frontend is untrusted. It holds no credential, opens no socket to the gateway, and
@@ -146,12 +158,18 @@ request against an agent that already exists. Goose is the obvious candidate —
 source, and advertising work with any LLM across 15+ providers — so a credential provider
 could plausibly live there rather than here.
 
-That was never assessed. Nothing was filed upstream, no maintainer was asked, and no attempt
-was made to size what a provider-with-a-lifecycle would touch in someone else's codebase. The
-question that would settle it is whether the upstream project models a credential as anything
-more than a string it reads once at startup; if it does not, the change is architectural
-rather than additive, which is the usual reason such a contribution is refused. **Unknown, and
-recorded as unknown.**
+Nothing was filed upstream, no maintainer was asked, and no attempt was made to size what a
+provider-with-a-lifecycle would touch in someone else's codebase. But the question this entry
+first posed — whether the upstream models a credential as more than a string it reads once at
+startup — is answerable from outside, and the answer is yes: Goose has an `AuthProvider` trait
+with an async `get_auth_header()`, and OAuth device-code and PKCE providers built on it. So
+the change would be **additive rather than architectural**, which removes the usual reason
+such a contribution is refused, and strengthens the case for asking rather than weakening it.
+
+What is still unknown is narrower, and is what someone should actually check: whether Goose's
+*generic* OpenAI-compatible provider can be pointed at that trait or reads a static key by
+construction, and whether the maintainers want a credential lifecycle that is not tied to a
+first-party provider. **Recorded as a reason to ask upstream, not as a reason not to.**
 
 ## One agent loop, with model differences pushed into profiles
 
