@@ -87,7 +87,11 @@ decision:**
   half: while the application declares no permission manifest the ACL is skipped for
   application commands altogether, so an emptied capability scopes only the Tauri-provided
   ones and such a window could still invoke every command the core registers (AGENTS.md
-  section 5). Capabilities also do not stop model-generated HTML fetching remote resources,
+  section 5). Switching the ACL on would not fully close it either:
+  `plugin:__TAURI_CHANNEL__|fetch` is exempt from the check unconditionally, and it drains an
+  application-wide map keyed by a global counter without checking which window is asking, so a
+  second window can steal a payload queued for the first by guessing a sequential id.
+  Capabilities also do not stop model-generated HTML fetching remote resources,
   which takes a restrictive CSP; `src-tauri/tauri.conf.json` does set one, but it is global
   rather than a policy for an isolated preview window. Both halves are needed and neither is
   in place for such a window. A fully

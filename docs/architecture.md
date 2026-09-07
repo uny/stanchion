@@ -86,13 +86,26 @@ the same script, the unforgeable factor has to come from outside it — a core-o
 dialog, or a secret the rendering context cannot read — never a token the frontend also
 holds.
 
-**The rule covers anything that decides an approval was unnecessary.** Gating the `approve`
-call alone is not enough: a forged message that widens an auto-run rule, or that moves the
-workspace root, reaches the same privileged effect without an approval ever being requested.
-So the risk classes, the user's opt-in rules, and the workspace root are core-owned state,
-and changing any of them demands the same unforgeable consent as running a shell command.
-Otherwise "never rules the model proposes" is vacuous, since model output is exactly what
-the WebView renders.
+**The rule covers anything that decides an approval was unnecessary — and enumerating those
+is how one gets missed.** Gating the `approve` call alone is not enough: a forged message that
+widens an auto-run rule, or that moves the workspace root, reaches the same privileged effect
+with no approval ever requested. But so does settings state that never enters the loop at
+all. Two such paths are already in this design:
+
+- **Anything that names a program the core will run.** An MCP stdio server entry is an
+  executable plus an argument list, and the `command` credential provider (`docs/auth.md`) is
+  a shell command re-run on token acquisition, TTL lapse and 401 invalidation. A forged
+  settings write supplies `/bin/sh -c ...` and the core runs it at startup or on the next
+  refresh — before tool discovery, before any classification.
+- **Anything that names where a credential is sent.** A profile update that keeps the
+  existing keychain reference but changes the gateway base URL exfiltrates the token on the
+  next request, without touching one approval-related field.
+
+So the requirement is a class, not a list: **core-owned state is any state whose change can
+cause execution, relocate the workspace boundary, alter what is auto-approved, or change
+where a credential is sent — and every write to it needs the same unforgeable consent as
+running a shell command.** Otherwise "never rules the model proposes" is vacuous, since model
+output is exactly what the WebView renders.
 
 The workspace root is the boundary for filesystem tools. Paths that escape it are refused by
 the core, not by the prompt.
