@@ -91,9 +91,10 @@ the moment the ACL is switched on, which is the next rule.
 `AppManifest::commands(...)` autogenerates `allow-`/`deny-` permissions, and that alone flips
 enforcement on for *every* application command at once — including `core_version`, which the
 capability file does not grant. So a pull request that adds a command must do both: pass
-`AppManifest::commands(...)` — through `tauri_build::try_build(Attributes::new()
-.app_manifest(...))`, since bare `build()` takes no attributes — *and* grant every
-application command the frontend still needs in `src-tauri/capabilities/default.json`. Do
+`AppManifest::commands(...)` — which means moving `build.rs` to
+`tauri_build::try_build(Attributes::new().app_manifest(...))`, since bare `build()` takes no
+attributes — *and* grant every application command the frontend still needs in
+`src-tauri/capabilities/default.json`. Do
 only the first and the window renders "core unreachable" while CI stays green, because
 nothing in CI launches the app. A pull request that does neither must say why.
 `WindowsAttributes::app_manifest` is an unrelated Windows XML manifest and is not this.

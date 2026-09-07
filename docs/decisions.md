@@ -91,12 +91,11 @@ decision:**
   `plugin:__TAURI_CHANNEL__|fetch` is exempt from the check unconditionally, and it drains an
   application-wide map keyed by a global counter without checking which window is asking, so a
   second window can steal a payload queued for the first by guessing a sequential id.
-  Capabilities also do not stop model-generated HTML fetching remote resources,
-  which takes a restrictive CSP; `src-tauri/tauri.conf.json` does set one, but it is global
-  rather than a policy for an isolated preview window. Both halves are needed and neither is
-  in place for such a window. A fully
-  native macOS application could host that one window in a `WKWebView`; the Windows and
-  Linux equivalents were not investigated.
+  Capabilities also do not stop model-generated HTML fetching remote resources, which takes a
+  restrictive CSP; `src-tauri/tauri.conf.json` does set one, but it is global rather than a
+  policy for an isolated preview window. Both halves are needed and neither is in place for
+  such a window. A fully native macOS application could host that one window in a
+  `WKWebView`; the Windows and Linux equivalents were not investigated.
 - *Long-form CJK input is a weak area outside a system WebView.* Tested against `iced` only,
   and false there: it composes inline, puts the candidate window under the caret, allows
   clause movement and resizing, and holds state over long input. The claim being retired
@@ -133,8 +132,7 @@ them tested here:
 
 Embedding a browser engine to get the editing contract means rendering model-produced text
 inside a full browser engine. That is the cost of choosing Tauri 2 for the text-editing
-contract, not a benefit of it,
-and the boundary is what pays it down.
+contract, not a benefit of it, and the boundary is what pays it down.
 
 The frontend is untrusted. It holds no credential, opens no socket to the gateway, and
 touches no files. Every capability it has is a named IPC command the core can refuse.
