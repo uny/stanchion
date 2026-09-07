@@ -88,7 +88,9 @@ pnpm tauri dev            # opens the window against the Vite dev server
 pnpm tauri build --no-bundle
 ```
 
-The Rust core lives in `src-tauri`; `cargo fmt` and `cargo clippy` run from there.
+The core lives in `crates/core` and must not depend on Tauri; `src-tauri` is the IPC
+boundary that wraps it. `cargo fmt`, `cargo clippy` and `cargo test` run from the repository
+root, which is the workspace root.
 
 ## Contributing
 

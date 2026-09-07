@@ -32,27 +32,44 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       - run: pnpm install --frozen-lockfile
 
       - name: Typecheck and build the frontend
         run: pnpm build
 
+      # Cargo runs from the workspace root so that crates/core is covered too, not just
+      # the Tauri shell. --workspace is explicit rather than implied by the root manifest.
       - name: Check Rust formatting
-        run: cargo fmt --check
-        working-directory: src-tauri
+        run: cargo fmt --all --check
 
-      - name: Lint the core
-        run: cargo clippy --locked --all-targets -- -D warnings
-        working-directory: src-tauri
+      - name: Lint the workspace
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      # The reason the workspace exists. Splitting the crates makes the absent `tauri` edge
+      # visible; only this step makes it checked. Without it a `tauri` line added to
+      # `crates/core/Cargo.toml` passes every other gate here, and the boundary
+      # `docs/architecture.md` describes is gone with a green build.
+      #
+      # `--target all` and `--all-features` are what make the check hard to walk around: the
+      # default host-target, default-feature graph omits a `cfg(windows)`-gated dependency
+      # and an unactivated optional one, both of which are still declarations of the edge.
+      # `-e normal,build` leaves dev-dependencies out on purpose — the ban is on what the
+      # core links, not on what its own tests may reach for.
+      - name: Assert the core does not depend on Tauri
+        run: |
+          cargo tree --locked -p stanchion-core -e normal,build \
+            --target all --all-features --prefix none > "$RUNNER_TEMP/core-deps.txt"
+          if grep -qE '^tauri' "$RUNNER_TEMP/core-deps.txt"; then
+            echo "::error::crates/core has gained a Tauri dependency; see crates/core/src/lib.rs"
+            cat "$RUNNER_TEMP/core-deps.txt"
+            exit 1
+          fi
 
       # Runs zero tests today. It is here so the first test added actually executes:
       # --all-targets above compiles test targets but never runs them.
-      - name: Test the core
-        run: cargo test --locked
-        working-directory: src-tauri
+      - name: Test the workspace
+        run: cargo test --locked --workspace
 
       - name: Build the application
         run: pnpm tauri build --no-bundle

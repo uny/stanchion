@@ -1,14 +1,18 @@
-//! The Rust core.
+//! The Tauri shell, which is the IPC boundary and nothing else.
 //!
 //! Everything the WebView can reach is a named command registered here. The WebView is
 //! treated as untrusted: it renders model output, so it gets no filesystem, network or
 //! shell capability of its own. See `docs/architecture.md`.
+//!
+//! Commands belong here; the work they delegate to belongs in `stanchion_core`, which does
+//! not depend on Tauri. A command that grows logic of its own has put interface code on the
+//! trusted side of the boundary.
 
 /// Reports the core's version. The skeleton's only command; it exists to prove the IPC
 /// boundary is wired end to end.
 #[tauri::command]
 fn core_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+    stanchion_core::version()
 }
 
 pub fn run() {
