@@ -46,6 +46,19 @@ jobs:
       - name: Lint the workspace
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
+      # The reason the workspace exists. Splitting the crates makes the absent `tauri` edge
+      # visible; only this step makes it checked. Without it a `tauri` line added to
+      # `crates/core/Cargo.toml` passes every other gate here, and the boundary
+      # `docs/architecture.md` describes is gone with a green build.
+      - name: Assert the core does not depend on Tauri
+        run: |
+          cargo tree --locked -p stanchion-core -e normal,build --prefix none > "$RUNNER_TEMP/core-deps.txt"
+          if grep -qE '^tauri' "$RUNNER_TEMP/core-deps.txt"; then
+            echo "::error::crates/core has gained a Tauri dependency; see crates/core/src/lib.rs"
+            cat "$RUNNER_TEMP/core-deps.txt"
+            exit 1
+          fi
+
       # Runs zero tests today. It is here so the first test added actually executes:
       # --all-targets above compiles test targets but never runs them.
       - name: Test the workspace

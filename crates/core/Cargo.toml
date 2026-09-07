@@ -7,4 +7,6 @@ rust-version.workspace = true
 publish.workspace = true
 
 # Deliberately empty, and `tauri` in particular must never appear here. See the crate docs.
+# CI enforces the `tauri` half of that: `.github/workflows/build.yml` fails the build if
+# `cargo tree -p stanchion-core` grows an edge to it.
 [dependencies]

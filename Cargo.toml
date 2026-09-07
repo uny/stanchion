@@ -1,7 +1,8 @@
 # The workspace exists to keep the core honest. `crates/core` holds everything that is not
 # the user interface and must not depend on `tauri`; `src-tauri` is the IPC boundary and
-# nothing else. `docs/architecture.md` describes that split, and splitting the crates is
-# what turns the description into something the compiler checks.
+# nothing else. `docs/architecture.md` describes that split; splitting the crates makes the
+# absent edge visible to `cargo tree`, and the "Assert the core does not depend on Tauri"
+# step in `.github/workflows/build.yml` is what makes it checked rather than merely visible.
 [workspace]
 members = ["crates/core", "src-tauri"]
 resolver = "2"
