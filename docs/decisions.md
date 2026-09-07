@@ -86,8 +86,8 @@ decision:**
   neither the core nor the network. An emptied Tauri capability does **not** supply the first
   half: while the application declares no permission manifest the ACL is skipped for
   application commands altogether, so an emptied capability scopes only the Tauri-provided
-  ones and such a window could still invoke every command the core registers (AGENTS.md
-  section 5). Switching the ACL on would not fully close it either:
+  ones, and a locally-served window could still invoke every command the core registers
+  (AGENTS.md section 5; a preview served from a non-local origin is still rejected). Switching the ACL on would not fully close it either:
   `plugin:__TAURI_CHANNEL__|fetch` is exempt from the check unconditionally, and it drains an
   application-wide map keyed by a global counter without checking which window is asking, so a
   second window can steal a payload queued for the first by guessing a sequential id.
@@ -161,17 +161,17 @@ source, and advertising work with any LLM across 15+ providers — so a credenti
 could plausibly live there rather than here.
 
 Nothing was filed upstream, no maintainer was asked, and no attempt was made to size what a
-provider-with-a-lifecycle would touch in someone else's codebase. But the question this entry
-first posed — whether the upstream models a credential as more than a string it reads once at
-startup — is answerable from outside, and the answer is yes: Goose has an `AuthProvider` trait
-with an async `get_auth_header()`, and OAuth device-code and PKCE providers built on it. So
-the change would be **additive rather than architectural**, which removes the usual reason
-such a contribution is refused, and strengthens the case for asking rather than weakening it.
+provider-with-a-lifecycle would touch in someone else's codebase. One part is checkable from
+outside without asking anyone, though, and it narrows the question: Goose already
+authenticates some providers without a static key — a device-code flow for GitHub Copilot,
+browser OAuth for ChatGPT Codex — so the upstream does model a credential as more than a
+string read once at startup, at least for the providers it implements first-hand.
 
-What is still unknown is narrower, and is what someone should actually check: whether Goose's
-*generic* OpenAI-compatible provider can be pointed at that trait or reads a static key by
-construction, and whether the maintainers want a credential lifecycle that is not tied to a
-first-party provider. **Recorded as a reason to ask upstream, not as a reason not to.**
+That does not settle it. What separates an additive change from an architectural one is
+whether Goose's *generic* OpenAI-compatible provider can be pointed at the same lifecycle or
+reads a static key by construction, and whether the maintainers want one that is not tied to
+a first-party provider. Neither has been checked. **Still unknown — but the first half is a
+morning's work: read that one provider, then ask.**
 
 ## One agent loop, with model differences pushed into profiles
 

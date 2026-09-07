@@ -17,8 +17,8 @@ Existing desktop LLM clients fall into two groups, and neither covers this groun
   behaviour were shaped for another produces a degraded result. But the provider-agnostic
   ones are neither few nor immature: Goose advertises working with any LLM across 15+
   providers, OpenCode with 75+, and Continue is provider-agnostic as well. Nor do all of
-  them assume a static key: Goose ships a device-code flow for GitHub Copilot and OAuth
-  PKCE for Databricks. But that lifecycle exists only for providers they implement
+  them assume a static key: Goose authenticates GitHub Copilot by device code and ChatGPT
+  Codex by browser OAuth. But that lifecycle exists only for the providers they implement
   first-hand. Point any of them at a *generic* OpenAI-compatible endpoint and the
   credential is a long-lived API key again.
 
