@@ -12,7 +12,10 @@ export default defineConfig({
     strictPort: true,
     // The Vite root is the repository root, so the Cargo target directory sits inside it.
     // Every cargo rebuild writes thousands of files there; none of them are frontend input.
-    watch: { ignored: ["**/src-tauri/**"] },
+    // The workspace root is the repository root, so that directory is `target/`, not
+    // `src-tauri/target/`. Vite merges this list with its own defaults, which cover
+    // node_modules and the out dir but nothing of cargo's.
+    watch: { ignored: ["**/src-tauri/**", "**/target/**"] },
   },
   build: {
     outDir: "dist",
