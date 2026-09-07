@@ -12,11 +12,17 @@ Chat clients for custom gateways are a solved and crowded space: LibreChat, Cher
 Witsy, 5ire and Open WebUI are all free, mature, and point at a custom base URL. There is no
 defensible reason to add another.
 
-The gap is one layer up. Agentic coding clients are tuned for a single vendor's model
-family, and a harness whose prompts, tool schemas and malformed-output recovery were shaped
-for one family degrades when pointed at another.
+The gap is one layer up — though not where this entry originally put it. "Agentic coding
+clients are tuned for a single vendor's model family" was re-checked and is false as a
+description of the field: Goose, OpenCode and Continue are all provider-agnostic, and some
+already authenticate without a static key for the providers they implement first-hand. What
+none of them offers is that credential lifecycle against a *generic* OpenAI-compatible
+endpoint, and that is the actual gap. Prompts, tool schemas and malformed-output recovery do
+still differ by family and one harness still has to absorb that — but that is how this client
+is built, not why it exists. See `README.md`.
 
-**Rules out:** competing on chat UX, conversation features, or breadth of provider support.
+**Rules out:** competing on chat UX, conversation features, or breadth of provider support —
+and equally, resting the case for this project on model-agnosticism, which is table stakes.
 
 ## Tauri 2 rather than a custom-drawn, native or JVM desktop toolkit
 
@@ -77,11 +83,19 @@ decision:**
   supply the review *interface* built on top of them — that cost is real, but it is ordinary
   UI work rather than something only a web stack can do.
 - *Sandboxed HTML preview requires a WebView frontend.* It requires one window that can reach
-  neither the core nor the network. Emptied Tauri capabilities scope which commands that
-  window may invoke; they do not stop model-generated HTML fetching remote resources, which
-  takes a restrictive CSP — both are needed, and neither has been implemented. A fully
-  native macOS application could host that one window in a `WKWebView`; the Windows and
-  Linux equivalents were not investigated.
+  neither the core nor the network. An emptied Tauri capability does **not** supply the first
+  half: while the application declares no permission manifest the ACL is skipped for
+  application commands altogether, so an emptied capability scopes only the Tauri-provided
+  ones, and a locally-served window could still invoke every command the core registers
+  (AGENTS.md section 5; a preview served from a non-local origin is still rejected). Switching the ACL on would not fully close it either:
+  `plugin:__TAURI_CHANNEL__|fetch` is exempt from the check unconditionally, and it drains an
+  application-wide map keyed by a global counter without checking which window is asking, so a
+  second window can steal a payload queued for the first by guessing a sequential id.
+  Capabilities also do not stop model-generated HTML fetching remote resources, which takes a
+  restrictive CSP; `src-tauri/tauri.conf.json` does set one, but it is global rather than a
+  policy for an isolated preview window. Both halves are needed and neither is in place for
+  such a window. A fully native macOS application could host that one window in a
+  `WKWebView`; the Windows and Linux equivalents were not investigated.
 - *Long-form CJK input is a weak area outside a system WebView.* Tested against `iced` only,
   and false there: it composes inline, puts the candidate window under the caret, allows
   clause movement and resizing, and holds state over long input. The claim being retired
@@ -93,11 +107,32 @@ decision:**
 **Rules out:** sharing UI code with a mobile target, and any frontend toolkit that exists on
 only one desktop platform.
 
+## Not evaluated: Electron
+
+Electron is the obvious alternative to Tauri, and this record has never mentioned it. That is
+an omission rather than a rejection: **nothing written here rules Electron out.**
+
+The reason the entry above gives does not distinguish it. Electron bundles Chromium, which
+inherits the platform's text-editing contract for the same reason a system WebView does, and
+it satisfies the cross-platform constraint as well. Neither of the two arguments this project
+actually relies on separates Tauri from Electron.
+
+Whoever closes this should measure rather than argue. The candidate discriminators, none of
+them tested here:
+
+- **Where the privileged side lives.** Tauri's is Rust, reachable from the WebView only
+  through named IPC commands. Electron's is Node in the main process. Whether that is a
+  material difference for a design in which credentials never leave the core, or only a
+  difference of language, has not been examined.
+- **Who patches the engine.** Electron ships a Chromium this project would then have to keep
+  current; a system WebView is patched by the OS vendor, and in exchange varies by OS version.
+- **Distribution size and memory.** The usual grounds, and the least interesting.
+
 ## The WebView is the risk; the IPC boundary is what contains it
 
 Embedding a browser engine to get the editing contract means rendering model-produced text
-inside a full browser engine. That is the cost of the decision above, not a benefit of it,
-and the boundary is what pays it down.
+inside a full browser engine. That is the cost of choosing Tauri 2 for the text-editing
+contract, not a benefit of it, and the boundary is what pays it down.
 
 The frontend is untrusted. It holds no credential, opens no socket to the gateway, and
 touches no files. Every capability it has is a named IPC command the core can refuse.
@@ -118,6 +153,25 @@ gateway, so it cannot serve a desktop client. The providers are implemented here
 token-refreshing sidecar.** That is a real workaround and it works, but it makes the
 distinguishing capability someone else's problem and leaves the product indistinguishable
 from what already exists.
+
+**Not evaluated: contributing this to an existing agent instead of building a client.** If the
+credential lifecycle is the one differentiator, the fair question is why it is not a pull
+request against an agent that already exists. Goose is the obvious candidate — Rust, open
+source, and advertising work with any LLM across 15+ providers — so a credential provider
+could plausibly live there rather than here.
+
+Nothing was filed upstream, no maintainer was asked, and no attempt was made to size what a
+provider-with-a-lifecycle would touch in someone else's codebase. One part is checkable from
+outside without asking anyone, though, and it narrows the question: Goose already
+authenticates some providers without a static key — a device-code flow for GitHub Copilot,
+browser OAuth for ChatGPT Codex — so the upstream does model a credential as more than a
+string read once at startup, at least for the providers it implements first-hand.
+
+That does not settle it. What separates an additive change from an architectural one is
+whether Goose's *generic* OpenAI-compatible provider can be pointed at the same lifecycle or
+reads a static key by construction, and whether the maintainers want one that is not tied to
+a first-party provider. Neither has been checked. **Still unknown — but the first half is a
+morning's work: read that one provider, then ask.**
 
 ## One agent loop, with model differences pushed into profiles
 

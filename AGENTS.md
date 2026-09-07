@@ -67,3 +67,34 @@ written to disk, never logged, and never included in crash reports or telemetry.
 
 Rendered model output runs with no path to the credential store. Any change that widens what
 the WebView can reach is a security change and must say so in its pull request.
+
+**The application command ACL is fail-open until it is switched on.** With no application
+permission manifest, Tauri does not merely grant nothing — it skips the check entirely, and
+*every* `#[tauri::command]` the application registers is callable from a local-origin
+frontend. The enforcement site is `tauri/src/webview/mod.rs`, which runs the ACL rejection
+only `if plugin_command.is_some() || has_app_acl_manifest || !is_local` — and for an app
+command invoked from our own WebView all three are false. `tauri-build/src/acl.rs` sets that
+middle flag only once the app manifest actually yields permissions, so with no manifest the
+condition never holds. (`tauri-macros/src/command/handler.rs` carries a similar-looking "All
+application commands are allowed if we don't have an application ACL" early return. That one
+is compile-time dead-code removal, it is inert unless `build > removeUnusedCommands` is set,
+and this project does not set it — so it is not the mechanism and must not be cited as it.)
+
+This is the live state, not a future hazard: `src-tauri/build.rs` calls bare
+`tauri_build::build()`, and `core_version` already reaches the WebView through it. The
+description in `src-tauri/capabilities/default.json` records the same fact — *while no app
+manifest exists*, that file's empty `permissions` list is the set of Tauri-provided commands
+the frontend may call and says nothing about the application's own. That stops being true
+the moment the ACL is switched on, which is the next rule.
+
+**Switching the ACL on is a two-part change, and doing half of it breaks the app.** Passing
+`AppManifest::commands(...)` autogenerates `allow-`/`deny-` permissions, and that alone flips
+enforcement on for *every* application command at once — including `core_version`, which the
+capability file does not grant. So a pull request that adds a command must do both: pass
+`AppManifest::commands(...)` — which means moving `build.rs` to
+`tauri_build::try_build(Attributes::new().app_manifest(...))`, since bare `build()` takes no
+attributes — *and* grant every application command the frontend still needs in
+`src-tauri/capabilities/default.json`. Do
+only the first and the window renders "core unreachable" while CI stays green, because
+nothing in CI launches the app. A pull request that does neither must say why.
+`WindowsAttributes::app_manifest` is an unrelated Windows XML manifest and is not this.

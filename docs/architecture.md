@@ -5,7 +5,7 @@
 ```
 ┌─────────────────────────────────────────────┐
 │  WebView (TypeScript / React)               │
-│  conversation · diff review · approvals     │
+│  conversation · diff review · approval UI   │
 │  markdown · syntax highlighting             │
 │  no credentials, no filesystem, no network  │
 └───────────────────┬─────────────────────────┘
@@ -24,10 +24,18 @@
 └─────────────────────────────────────────────┘
 ```
 
-The split is a security boundary, not only a layering preference. The WebView renders text
-that a model produced, so it is treated as untrusted. It never holds a credential, never
-opens a socket to the gateway, and never touches the filesystem directly. Every capability
-it has is a named IPC command the core can refuse.
+The split is a security boundary, not only a layering preference — but the WebView is the
+risk it contains, not a component that supplies safety. It renders text that a model
+produced, so it is treated as untrusted. It never holds a credential, never opens a socket to
+the gateway, and never touches the filesystem directly. Every capability it has is a named
+IPC command the core can refuse.
+
+That last sentence is the design, and both halves of it need qualifying. It says nothing
+about *who* caused a call — a separate problem, and the approval rule below is what answers
+it. And *which* commands are reachable is not enforced yet either: with no application
+permission manifest, Tauri skips the ACL check for application commands entirely, so every
+command the core registers is reachable from the WebView today. The rule that closes that
+is in AGENTS.md, section 5.
 
 ## The agent loop
 
@@ -66,6 +74,38 @@ directory, search, run a shell command. Everything else arrives through MCP.
 Each tool declares a risk class. Reads inside the workspace run without asking. Writes show a
 diff and wait. Shell commands wait, and the approval carries the exact command. Approvals are
 per-invocation by default, with opt-in rules the user writes, never rules the model proposes.
+
+**An IPC message is not consent.** The approval UI is rendered in the WebView, which is the
+untrusted surface. Model output that achieves script execution there can invoke any command
+the frontend is allowed to invoke, and the core cannot tell a scripted call from a click — so
+a bare `approve(tool_call_id)` command would let a model approve its own shell command. The
+core must require something the WebView cannot forge before it executes an approved call.
+Which mechanism supplies that is open (issue #21); no design that takes the frontend's word
+for it is acceptable. Because every signal that originates in the WebView is forgeable by
+the same script, the unforgeable factor has to come from outside it — a core-owned native
+dialog, or a secret the rendering context cannot read — never a token the frontend also
+holds.
+
+**The rule covers anything that decides an approval was unnecessary — and enumerating those
+is how one gets missed.** Gating the `approve` call alone is not enough: a forged message that
+widens an auto-run rule, or that moves the workspace root, reaches the same privileged effect
+with no approval ever requested. But so does settings state that never enters the loop at
+all. Two such paths are already in this design:
+
+- **Anything that names a program the core will run.** An MCP stdio server entry is an
+  executable plus an argument list, and the `command` credential provider (`docs/auth.md`) is
+  a shell command re-run on token acquisition, TTL lapse and 401 invalidation. A forged
+  settings write supplies `/bin/sh -c ...` and the core runs it at startup or on the next
+  refresh — before tool discovery, before any classification.
+- **Anything that names where a credential is sent.** A profile update that keeps the
+  existing keychain reference but changes the gateway base URL exfiltrates the token on the
+  next request, without touching one approval-related field.
+
+So the requirement is a class, not a list: **core-owned state is any state whose change can
+cause execution, relocate the workspace boundary, alter what is auto-approved, or change
+where a credential is sent — and every write to it needs the same unforgeable consent as
+running a shell command.** Otherwise "never rules the model proposes" is vacuous, since model
+output is exactly what the WebView renders.
 
 The workspace root is the boundary for filesystem tools. Paths that escape it are refused by
 the core, not by the prompt.
