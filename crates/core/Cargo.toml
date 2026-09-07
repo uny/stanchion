@@ -8,5 +8,6 @@ publish.workspace = true
 
 # Deliberately empty, and `tauri` in particular must never appear here. See the crate docs.
 # CI enforces the `tauri` half of that: `.github/workflows/build.yml` fails the build if
-# `cargo tree -p stanchion-core` grows an edge to it.
+# `cargo tree` finds the edge under any target or feature combination. Dev-dependencies are
+# outside that check; everything below this line is inside it.
 [dependencies]

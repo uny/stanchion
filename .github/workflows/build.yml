@@ -50,9 +50,16 @@ jobs:
       # visible; only this step makes it checked. Without it a `tauri` line added to
       # `crates/core/Cargo.toml` passes every other gate here, and the boundary
       # `docs/architecture.md` describes is gone with a green build.
+      #
+      # `--target all` and `--all-features` are what make the check hard to walk around: the
+      # default host-target, default-feature graph omits a `cfg(windows)`-gated dependency
+      # and an unactivated optional one, both of which are still declarations of the edge.
+      # `-e normal,build` leaves dev-dependencies out on purpose — the ban is on what the
+      # core links, not on what its own tests may reach for.
       - name: Assert the core does not depend on Tauri
         run: |
-          cargo tree --locked -p stanchion-core -e normal,build --prefix none > "$RUNNER_TEMP/core-deps.txt"
+          cargo tree --locked -p stanchion-core -e normal,build \
+            --target all --all-features --prefix none > "$RUNNER_TEMP/core-deps.txt"
           if grep -qE '^tauri' "$RUNNER_TEMP/core-deps.txt"; then
             echo "::error::crates/core has gained a Tauri dependency; see crates/core/src/lib.rs"
             cat "$RUNNER_TEMP/core-deps.txt"
