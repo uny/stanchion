@@ -30,8 +30,12 @@ produced, so it is treated as untrusted. It never holds a credential, never open
 the gateway, and never touches the filesystem directly. Every capability it has is a named
 IPC command the core can refuse.
 
-That last sentence controls *which* commands are reachable. It says nothing about *who*
-caused a call, which is a separate problem — see the approval rule below.
+That last sentence is the design, and both halves of it need qualifying. It says nothing
+about *who* caused a call — a separate problem, and the approval rule below is what answers
+it. And *which* commands are reachable is not enforced yet either: with no application
+permission manifest, Tauri skips the ACL check for application commands entirely, so every
+command the core registers is reachable from the WebView today. The rule that closes that
+is in AGENTS.md, section 5.
 
 ## The agent loop
 
@@ -77,7 +81,18 @@ the frontend is allowed to invoke, and the core cannot tell a scripted call from
 a bare `approve(tool_call_id)` command would let a model approve its own shell command. The
 core must require something the WebView cannot forge before it executes an approved call.
 Which mechanism supplies that is open (issue #21); no design that takes the frontend's word
-for it is acceptable.
+for it is acceptable. Because every signal that originates in the WebView is forgeable by
+the same script, the unforgeable factor has to come from outside it — a core-owned native
+dialog, or a secret the rendering context cannot read — never a token the frontend also
+holds.
+
+**The rule covers anything that decides an approval was unnecessary.** Gating the `approve`
+call alone is not enough: a forged message that widens an auto-run rule, or that moves the
+workspace root, reaches the same privileged effect without an approval ever being requested.
+So the risk classes, the user's opt-in rules, and the workspace root are core-owned state,
+and changing any of them demands the same unforgeable consent as running a shell command.
+Otherwise "never rules the model proposes" is vacuous, since model output is exactly what
+the WebView renders.
 
 The workspace root is the boundary for filesystem tools. Paths that escape it are refused by
 the core, not by the prompt.
