@@ -180,6 +180,33 @@ and gets fixed rather than worked around.
 
 **Rules out:** a loop that is correct for one vendor and patched for the others.
 
+## A run is a value, not the application's mode
+
+The loop must be instantiable many times over, concurrently, inside one process. Everything
+that describes a run — the workspace root, the model profile, the credential handle, the
+message history, the limits — is carried in a value, never in a global or in a singleton the
+application configures once at startup.
+
+This is recorded before the loop is written because it is free now and a rewrite afterwards.
+Nothing in `crates/core` assumes a single run yet; the moment the loop lands, something will.
+
+**Why it is unusually cheap here.** Fanning one task across several models and comparing the
+results is the most-praised capability of the closest adjacent tool, and the complaint filed
+most often against that tool is that fanning out across vendor agents multiplies the
+subscription each one burns. This project's shape inverts that cost: several profiles against
+one gateway credential is the same loop run N times, not N products paid for separately. The
+two decisions already made — one loop with the differences pushed into profiles, and a
+credential that is a provider rather than a string — are precisely what make concurrency a
+consequence of the architecture rather than a feature bolted on later.
+
+**Rules out:** a loop that reads its configuration from process-wide state; a credential
+provider that can serve only one consumer; a tool implementation that assumes the process has
+exactly one workspace root.
+
+Not decided here: whether concurrent runs get isolated git worktrees, and what comparing
+their results looks like. Those are product questions, and this entry only keeps them
+reachable.
+
 ## Rejected: rendering an agent-driven UI description format natively
 
 Considered as a way to avoid embedding a browser engine and to exercise a separate renderer
