@@ -173,6 +173,42 @@ reads a static key by construction, and whether the maintainers want one that is
 a first-party provider. Neither has been checked. **Still unknown — but the first half is a
 morning's work: read that one provider, then ask.**
 
+**Evaluated 2026-09-07: Orca, and the shape of the gap.** Orca is the largest adjacent tool —
+an orchestrator that runs any CLI agent, each in its own git worktree. It does not call model
+APIs itself; the wrapped CLI does, and each brings its own credential. For a gateway that
+issues a *static* key Orca is already a substitute, reached today through a custom provider on
+the Codex CLI. What it has no notion of is a credential with a lifecycle: its provider-account
+panel accepts vendor subscription logins only, and first-class custom endpoints are an open
+request (`stablyai/orca` #9239, filed 2026-07-17) whose stated workaround is a base URL plus a
+static token pasted into a wrapper command. **That is the arrangement rejected two paragraphs
+above, running at scale** — so the gap this project aims at is real and someone is already
+feeling it, but it is a gap in credential lifecycle, not in orchestration.
+
+Both major agent CLIs already accept a credential *command* re-run on an interval: Claude
+Code's `apiKeyHelper`, and Codex's `[model_providers.<id>.auth]` carrying `command` and
+`refresh_interval_ms` (`codex-rs/model-provider/src/auth.rs`). This project's own `command`
+provider consumes that shape; the entry below produces it.
+
+## The credential lifecycle gets a command-line surface, but not before it exists
+
+`crates/core` does not depend on the frontend, so a command that prints a live token for a
+configured profile is a third consumer of the same core rather than a second product. Because
+both agent CLIs above accept exactly that shape, the surface puts this project's
+distinguishing capability inside tools it otherwise has no contact with — the orchestrator
+above included, which makes it a host rather than a competitor.
+
+**It ships with the authentication milestone, not earlier.** Until a provider exists that
+actually refreshes, such a command could only print a stored static key, which is the sidecar
+arrangement this file rejects — except shipped by us rather than suggested to the user. The
+value of the surface is exactly co-extensive with the lifecycle behind it.
+
+**The guard, because the risk here is drift rather than logic.** The command is useful, people
+wire it into their agent CLI, and the desktop client never gets finished — at which point
+"shipping only a static-key provider and telling users to run a sidecar" has come true by
+accident, with us maintaining the sidecar. So the walking-skeleton milestone keeps the
+completion condition it has: the GUI walks. The command is a surface over the core, never the
+product.
+
 ## One agent loop, with model differences pushed into profiles
 
 If supporting a model requires a branch inside the loop, the profile abstraction is wrong
