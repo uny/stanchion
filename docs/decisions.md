@@ -173,12 +173,171 @@ reads a static key by construction, and whether the maintainers want one that is
 a first-party provider. Neither has been checked. **Still unknown — but the first half is a
 morning's work: read that one provider, then ask.**
 
+**Evaluated 2026-09-07: Orca, and the shape of the gap.** Orca is the largest adjacent tool —
+an orchestrator that runs any CLI agent, each in its own git worktree. It does not call model
+APIs itself; the wrapped CLI does, and each brings its own credential. For a gateway that
+issues a *static* key Orca is already a substitute, reached through a custom provider on the
+wrapped CLI — that last step is asserted here, not tested. What Orca's own surface has no
+notion of is a credential with a lifecycle: its provider-account panel accepts vendor
+subscription logins only, and first-class custom endpoints are an open request
+(`stablyai/orca` #9239, filed 2026-07-17) whose stated workaround is a base URL plus a static
+token pasted into a wrapper command — the same shape as the sidecar turned down above under
+*"Rejected: shipping only a static-key provider"*.
+
+**What that issue does and does not show.** It shows the static-token workaround is what
+people reach for in practice. It does **not** show anyone feeling a credential-*lifecycle*
+gap: the filer reports the workaround works, asks for in-panel switching and usage tracking,
+and reaches Anthropic-compatible endpoints through `ANTHROPIC_BASE_URL` — a wire protocol
+`architecture.md` puts outside this core. One issue carrying one comment is not evidence of
+scale either; the tool's popularity is not the workaround's. So the gap this project aims at
+is *adjacent to* a real complaint rather than demonstrated by it, and it is a gap in
+credential lifecycle rather than in orchestration.
+
+Both major agent CLIs already accept a credential *command* re-run on an interval: Claude
+Code's `apiKeyHelper`, and Codex's `[model_providers.<id>.auth]` carrying `command` and
+`refresh_interval_ms` (`codex-rs/model-provider/src/auth.rs`). This project's own `command`
+provider consumes that shape; the entry below produces it.
+
+## The credential lifecycle gets a command-line surface, but not before it exists
+
+`crates/core` does not depend on the frontend, so a command that prints a live token for a
+configured profile is a third consumer of the same core rather than a second product. Because
+both agent CLIs above accept exactly that shape, the surface reaches tools this project
+otherwise has no contact with — the orchestrator above included, which makes it a host rather
+than a competitor. How much of the distinguishing capability actually travels that far is the
+subject of the next three paragraphs, and the answer is: less than the shape suggests.
+
+**It ships behind a provider that actually refreshes; the milestone is the consequence, not
+the rule.** Until such a provider exists the command could only print a stored static key,
+which is the sidecar arrangement this file rejects — except shipped by us rather than
+suggested to the user. That places it in the authentication milestone, but "is it in M2?" is
+not the check, because the `static` provider is M1 and a command exercised only against it
+would satisfy the label while being exactly the thing forbidden. The condition is that a
+refreshing provider exists *and the command is exercised against it*; issue #27 carries that
+as its blocker (#7, #9) and in its done-when, and this entry is the looser statement of the
+two.
+
+**What the shape does not carry.** The consuming interface is a bare token on stdout, so the
+expiry does not cross the boundary. The consumer re-runs the command on a fixed interval it
+was configured with, not when the token is near expiry: Codex defaults `refresh_interval_ms`
+to 300000 and documents it as the maximum age of the cached token, while this project's rule
+is a 60-second buffer — so a token handed over with 61 seconds left satisfies `auth.md` and
+is still being sent four minutes after it died, which `auth.md` classes as a bug rather than
+an expected path. Three more of the rules that apply to every provider are in-process rules
+and do not survive the boundary either: `invalidate()` and the single retry happen inside the
+consumer, where this core cannot see them; "concurrent refresh collapses" collapses nothing
+when N agent CLIs each spawn their own process, and against an IdP that rotates refresh
+tokens two such processes can get the whole token family revoked; and an interactive flow
+cannot prompt from a helper the caller runs on a timer and reads verbatim, so
+`oidc_device_code` and `oidc_auth_code_pkce` cannot be served this way at all without first
+settling `auth.md`'s open question on persisting a refresh token. **The surface exports the
+token, not the lifecycle** — whether it must therefore emit a TTL the consumer can be
+configured from, share a cache with the running application, or simply refuse the interactive
+providers is open, and #27 does not close it.
+
+**It is also a standing token oracle, and that is a security change.** Printing a live bearer
+token to stdout is one sanctioned unwrap of the secret type, against `auth.md`'s rule that
+redaction lives at the boundary rather than at the call site — the exception is here so that
+the next such unwrap is still a defect. The larger cost is who may call it. This project's
+own shell tool would reach it: model output proposes `stanchion token --profile <name>`, the
+result lands in the message history, is persisted with the conversation and rendered in the
+untrusted WebView, which retires "rendered model output runs with no path to the credential
+store" (`AGENTS.md` section 5) in a single step. The same holds one level out — once the
+command is a host agent's credential helper, that agent's shell tool can invoke it too, and
+the only remaining control is the *host's* approval configuration, which this project neither
+sets nor observes.
+
+**Rules out:** a token command reachable from this project's own tool set; a `command`
+provider allowed to resolve to this command, which would spawn itself until the process runs
+out of descriptors; and shipping the surface without stating, where users will read it, that
+it hands the credential's blast radius to the calling agent.
+
+**"A third consumer of the same core" is a structural claim and nothing checks it.** The
+neighbouring boundary claim is mechanised — `.github/workflows/build.yml` fails the build if
+`cargo tree` finds a `tauri` edge under `stanchion-core` — and the WebView-widening rule has a
+line in the pull-request template. This one has neither, so a command bolted onto the
+`src-tauri` binary, or placed behind a crate that depends on `tauri`, ships green. Whoever
+builds #27 owes it the same kind of check the core's own rule already has.
+
+**The guard, because drift is a risk alongside the two above.** The command is useful, people
+wire it into their agent CLI, and the desktop client never gets finished — at which point
+"shipping only a static-key provider and telling users to run a sidecar" has come true by
+accident, with us maintaining the sidecar. The walking-skeleton milestone therefore keeps the
+completion condition it has: the GUI walks. **That is a weaker guard than it looks**, and the
+gap should be seen rather than papered over: M1 is already behind the command when it ships in
+M2, so keeping M1's condition prevents the command being *substituted* for the skeleton and
+does nothing about the failure actually named, which is a GUI abandoned somewhere in M2 or M3.
+Nothing here ties the command's continued shipping to progress on the loop. The command is a
+surface over the core, never the product — and if that stops being true, this paragraph is
+where it was predicted, not where it was prevented.
+
 ## One agent loop, with model differences pushed into profiles
 
 If supporting a model requires a branch inside the loop, the profile abstraction is wrong
 and gets fixed rather than worked around.
 
 **Rules out:** a loop that is correct for one vendor and patched for the others.
+
+## A run is a value, not the application's mode
+
+The loop must be instantiable many times over, concurrently, inside one process. Everything
+that describes a run — the workspace root, the model profile, the credential handle, the
+message history, the limits — is carried in a value, never in a global or in a singleton the
+application configures once at startup.
+
+This is recorded before the loop is written because it is free now and a rewrite afterwards.
+Nothing in `crates/core` assumes a single run yet; the moment the loop lands, something will.
+
+**Why it is unusually cheap here.** Fanning one task across several models and comparing the
+results is the most-praised capability of Orca, evaluated above, and the complaint filed most
+often against it is that fanning out across vendor agents multiplies the subscription each one
+burns. Neither superlative is sourced — they are recorded impressions, carried also by issue
+#26, and should be re-checked before anything heavier is rested on them. This project's shape
+inverts that cost: several profiles against one gateway credential is the same loop run N
+times, not N products paid for separately. The two decisions already made — one loop with the
+differences pushed into profiles, and a credential that is a provider rather than a string —
+are precisely what make concurrency a consequence of the architecture rather than a feature
+bolted on later.
+
+**Rules out:** a loop that reads its configuration from process-wide state; a credential
+provider that can serve only one consumer; a tool implementation that assumes the process has
+exactly one workspace root.
+
+**Carried in a value is not the same as supplied by the caller, and the difference is a
+security boundary.** A run names the model profile — which carries the gateway base URL — the
+credential handle, and the limits. `architecture.md` already puts "change where a credential
+is sent" in the class needing unforgeable consent, but it reaches that class through *settings
+writes*, and a run started from a value writes no setting. Starting a run therefore belongs to
+that same class under the definition's own logic: the frontend may select a stored profile and
+never assemble one, or a forged IPC call pairs the real credential handle with an
+attacker-chosen base URL and the core sends the token there on the first request. Limits ride
+along for the same reason — a run whose limits its caller chooses is a run that need never
+stop, against the one credential every concurrent run shares.
+
+**Each of the three bullets above needs a done-when, and today none of them has one.** Issue
+#13 asks for two runs *against different profiles* progressing without observing each other,
+and a profile is prompt, tool-schema dialect, recovery and context management (#14) — so a
+conforming test can pass while a process-global workspace root serves both runs, and #15's
+confinement tests pass too, since a single global root is exactly what a single-root escape
+test proves correct. The same test can pass with two mock credential providers, never
+exercising one provider serving two runs. And asserting interleaved *progress* does not assert
+that each request carried its own run's configuration. Concretely: a per-run assertion on what
+each outbound request carried, a two-root test, and a shared-provider test — until those
+exist, this entry is a preference rather than a constraint.
+
+**What the concurrency makes stale elsewhere, recorded so it is not discovered in code.**
+`auth.md`'s `invalidate()` takes no token identity, so with N runs behind one provider a 401
+in one run drops the token the others are using, and "a second 401 is surfaced, not retried"
+then fails a healthy run for an unrelated one; "concurrent refresh collapses" covers the
+refresh, not the invalidation. And `architecture.md`'s approval is per-invocation over a diff
+with no snapshot of what was diffed, so two runs sharing one workspace root can make the
+content approved and the content written differ — while an approval keyed only on a
+model-supplied call id is ambiguous across runs in the first place. Neither is settled here;
+both are now known, and both bind #21 and #16.
+
+Not decided here: whether concurrent runs get isolated git worktrees, and what comparing
+their results looks like. Those are product questions, and this entry only keeps them
+reachable.
 
 ## Rejected: rendering an agent-driven UI description format natively
 
