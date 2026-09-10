@@ -13,7 +13,8 @@ fn main() {
     // prints a hint that this crate has fallen behind the CLI; keep it, since the two are
     // pinned in different lockfiles and drift on their own.
     tauri_build::try_build(attributes).expect(
-        "failed to run tauri-build; an `unknown field` here means `@tauri-apps/cli` has \
-         outrun the locked `tauri-build` — run `cargo update`",
+        "failed to run tauri-build; an `unknown field` here is either a typo in \
+         tauri.conf.json or `@tauri-apps/cli` having outrun the locked `tauri-build`, in \
+         which case `cargo update`",
     );
 }
