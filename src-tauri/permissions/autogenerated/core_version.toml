@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-core-version"
+description = "Enables the core_version command without any pre-configured scope."
+commands.allow = ["core_version"]
+
+[[permission]]
+identifier = "deny-core-version"
+description = "Denies the core_version command without any pre-configured scope."
+commands.deny = ["core_version"]

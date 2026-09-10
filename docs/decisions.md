@@ -84,10 +84,11 @@ decision:**
   UI work rather than something only a web stack can do.
 - *Sandboxed HTML preview requires a WebView frontend.* It requires one window that can reach
   neither the core nor the network. An emptied Tauri capability does **not** supply the first
-  half: while the application declares no permission manifest the ACL is skipped for
-  application commands altogether, so an emptied capability scopes only the Tauri-provided
-  ones, and a locally-served window could still invoke every command the core registers
-  (AGENTS.md section 5; a preview served from a non-local origin is still rejected). Switching the ACL on would not fully close it either:
+  half. It did not when this was written, because with no application permission manifest the
+  ACL was skipped for application commands altogether, so an emptied capability scoped only
+  the Tauri-provided ones and a locally-served window could still invoke every command the
+  core registers (AGENTS.md section 5; a preview served from a non-local origin is still
+  rejected). The ACL has since been switched on, and it still does not close this:
   `plugin:__TAURI_CHANNEL__|fetch` is exempt from the check unconditionally, and it drains an
   application-wide map keyed by a global counter without checking which window is asking, so a
   second window can steal a payload queued for the first by guessing a sequential id.
