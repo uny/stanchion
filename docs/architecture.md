@@ -30,12 +30,12 @@ produced, so it is treated as untrusted. It never holds a credential, never open
 the gateway, and never touches the filesystem directly. Every capability it has is a named
 IPC command the core can refuse.
 
-That last sentence is the design, and both halves of it need qualifying. It says nothing
+That last sentence is the design, and one half of it still needs qualifying. It says nothing
 about *who* caused a call — a separate problem, and the approval rule below is what answers
-it. And *which* commands are reachable is not enforced yet either: with no application
-permission manifest, Tauri skips the ACL check for application commands entirely, so every
-command the core registers is reachable from the WebView today. The rule that closes that
-is in AGENTS.md, section 5.
+it. *Which* commands are reachable, on the other hand, is now enforced: the application
+command ACL is switched on, so a command the capability does not grant is rejected at the
+IPC boundary rather than skipped past. The rule that keeps it that way, and the mechanism
+that made the unenforced state possible, are in AGENTS.md, section 5.
 
 ## The agent loop
 
