@@ -68,8 +68,8 @@ written to disk, never logged, and never included in crash reports or telemetry.
 Rendered model output runs with no path to the credential store. Any change that widens what
 the WebView can reach is a security change and must say so in its pull request.
 
-**The application command ACL is fail-open unless an application manifest is passed, and it
-is passed.** `src-tauri/build.rs` calls
+**The application command ACL is fail-open unless the application manifest yields
+permissions, and it does.** `src-tauri/build.rs` calls
 `tauri_build::try_build(Attributes::new().app_manifest(AppManifest::new().commands(...)))`,
 and `src-tauri/capabilities/default.json` grants the one command the frontend needs. A
 command absent from that capability is rejected at the IPC boundary — verified by building
