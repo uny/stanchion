@@ -9,5 +9,11 @@ fn main() {
     // AGENTS.md section 5 requires the pull request to state.
     let attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(&["core_version"]));
-    tauri_build::try_build(attributes).expect("failed to run tauri-build");
+    // `expect` rather than bare `build()`, which takes no attributes. Bare `build()` also
+    // prints a hint that this crate has fallen behind the CLI; keep it, since the two are
+    // pinned in different lockfiles and drift on their own.
+    tauri_build::try_build(attributes).expect(
+        "failed to run tauri-build; an `unknown field` here means `@tauri-apps/cli` has \
+         outrun the locked `tauri-build` — run `cargo update`",
+    );
 }
