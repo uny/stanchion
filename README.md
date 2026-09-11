@@ -1,5 +1,12 @@
 # stanchion
 
+> **Status: closed and archived, 2026-09-11.** The gateway this was built for now ships a
+> GUI client of its own, so the need this project answered has been answered. The first
+> entry in [`docs/decisions.md`](docs/decisions.md) records why, what was built (a walking
+> skeleton under a fail-closed command ACL, and nothing above it), and the findings worth
+> taking elsewhere — the Tauri application ACL default and the channel bypass in
+> particular. Everything below this note is left as it was written, in the present tense.
+
 A desktop agentic coding client for OpenAI-compatible LLM gateways.
 
 A *stanchion* is the upright that holds a line in place — it supports the load and defines
