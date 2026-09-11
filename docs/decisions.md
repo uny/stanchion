@@ -6,6 +6,65 @@ re-litigate a settled question or retry a known dead end.
 
 Add to this file when a decision would otherwise survive only in someone's memory.
 
+## Closed: the gateway this was built for now ships its own client
+
+Closed on 2026-09-11. This entry is first because it changes how every entry below it should
+be read: as a record of what was decided and why, not as a plan still being executed.
+
+The positioning entry below argues that the gap in the field is a credential lifecycle
+against a *generic* OpenAI-compatible endpoint. That argument was checked against the field
+and it holds. But the project did not start from the field; it started from one gateway, one
+identity provider in front of it, and one person who needed a coding client that could get
+through that identity provider without a static key. The generic case was the honest
+description of the resulting design, not the reason the design was undertaken. The operators
+of that gateway now distribute a GUI client built for it. The person who needed the gap
+filled has it filled, by the party best placed to fill it.
+
+**What that rules out:** continuing on the strength of the generic positioning alone. The
+positioning is true, and a project could exist on it — but it would be a project without a
+user in hand, built on the hope that a second gateway with the same shape turns up, and that
+is a different project with a different first entry in this file. This one was never that.
+Effort is not the reason, and the earlier refusal to write concurrent runs off as out of
+scope for a small project still stands as a rule for whatever comes next; the reason is that
+the need this was answering has been answered.
+
+**What is true at the close.** The skeleton walks: a Tauri 2 shell over a Tauri-free core
+(#23), one command crossing the IPC boundary under an application ACL that is fail-closed
+and was measured to be so in every configuration that could reopen it (#29, AGENTS.md
+section 5). That meets the walking-skeleton milestone's completion condition — the GUI
+walks — at the level of one command, and no further: nothing above it was built. No
+credential provider, the `static` one that the same milestone contains included (#3,
+#7–#11); no transport (#4); no agent loop (#13); no tools (#15–#17); no command-line
+surface (#27). At the close the issues are open; they record what the design called for
+and in what order.
+
+**What is worth taking somewhere else**, in roughly the order it was learned:
+
+- The Tauri application command ACL is fail-open until the application manifest yields
+  permissions, and the enforcement site is `tauri/src/webview/mod.rs`, not the
+  similar-looking early return in `tauri-macros`. This project shipped its skeleton (#19)
+  without knowing it, the correction is in AGENTS.md section 5, and #30 records that nothing
+  in CI checked the direction that fails silently.
+- `plugin:__TAURI_CHANNEL__|fetch` bypasses that ACL unconditionally and is not scoped to
+  the requesting window (#25). Any Tauri application with two windows of different trust
+  has this problem and this repository did not solve it.
+- Approval must not be forgeable from the WebView (#21). The constraint is recorded; the
+  mechanism was still open. Whoever builds an agentic client on a WebView frontend has to
+  answer it, and the three candidates listed there are the starting point.
+- The reason to prefer a system WebView over a custom-drawn toolkit is the platform's
+  text-editing contract, read out of `iced_widget`'s source line by line, not rendering.
+- A run is a value carrying its own workspace root, profile, credential handle and limits,
+  never a global the application sets once — and the argument for adopting that before the
+  loop exists applies to any agent host, not only this one.
+- Check an English project name for slang connotation and for collisions inside the
+  agent-tooling domain specifically, not only for global uniqueness.
+
+**Re-opening.** If the purpose-built client stops being available, or a second gateway
+appears with the same shape of need and a user attached to it, this file is where to
+restart from: read it top to bottom, re-check every "Rules out" against the source it cites,
+and expect the field to have moved. The positioning entry was re-litigated once already and
+one of its original grounds fell; assume the same of the rest.
+
 ## Build an agentic coding client, not a chat client
 
 Chat clients for custom gateways are a solved and crowded space: LibreChat, Cherry Studio,
