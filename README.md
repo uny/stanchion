@@ -23,7 +23,11 @@ Existing desktop LLM clients fall into two groups, and neither covers this groun
   credential is a long-lived API key again.
 
 stanchion targets what that leaves: an **agentic coding GUI** for OpenAI-compatible gateways
-that can authenticate by means other than a static key.
+that can authenticate by means other than a static key — and, alongside it, the user's own
+Claude Code and Codex sign-ins, driven through those unmodified binaries as run backends, so
+that runs on different vendors live in one window, under one account model and one approval
+record. That second half puts it in the same shape as several existing tools; what it adds is
+recorded as a hypothesis, not a claim, in [docs/decisions.md](docs/decisions.md).
 
 **Being model-agnostic is not the claim.** As of 2026 it is table stakes, and any positioning
 that rests on it is describing the field rather than a difference from it. The credential
