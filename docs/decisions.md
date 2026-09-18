@@ -24,6 +24,21 @@ is built, not why it exists. See `README.md`.
 **Rules out:** competing on chat UX, conversation features, or breadth of provider support —
 and equally, resting the case for this project on model-agnosticism, which is table stakes.
 
+**Amended 2026-09-18: the vendor CLIs become first-class, and the positioning is a hypothesis
+again.** The entry above located the gap in a credential lifecycle against a generic gateway.
+The project now also drives the user's own Claude Code and Codex sign-ins, through those
+binaries, as run backends (see "Run backends" below). That puts it in the same shape as Orca,
+Conductor, Maestro and Vibe Kanban — GUIs over vendor CLI processes, some multi-account —
+and Orca already runs Claude and Codex workers in one orchestration with an inbox between
+them, so a client that messages between runs of different vendors is not new either. What
+this project has that those do not is the native backend's credential lifecycle against a
+generic endpoint, and a stated, per-backend account of what the core enforces. Whether either
+is a reason to prefer it is untested. The first entry in this file is therefore a hypothesis
+with a user attached, not a claim about the field, and it stays that way until something is
+measured.
+
+**Rules out, additionally:** describing inter-run messaging as a differentiator.
+
 ## Tauri 2 rather than a custom-drawn, native or JVM desktop toolkit
 
 The reason is the platform's text-editing contract, not rendering.
@@ -277,6 +292,11 @@ where it was predicted, not where it was prevented.
 If supporting a model requires a branch inside the loop, the profile abstraction is wrong
 and gets fixed rather than worked around.
 
+**Scoped 2026-09-18 to the `native` backend.** A CLI backend owns its own loop, tools, context
+management, retries and subagents, and this principle says nothing about it. What the two
+backends share is everything above the loop — the run, the account, the event stream, the
+inbox, the approval record, process supervision — and that is the layer #39 defines.
+
 **Rules out:** a loop that is correct for one vendor and patched for the others.
 
 ## A run is a value, not the application's mode
@@ -339,6 +359,62 @@ both are now known, and both bind #21 and #16.
 Not decided here: whether concurrent runs get isolated git worktrees, and what comparing
 their results looks like. Those are product questions, and this entry only keeps them
 reachable.
+
+## Run backends: the vendor CLIs are first-class, and the terms are why
+
+A run is driven either by the core's own loop (`native`) or by an unmodified vendor binary the
+core supervises as a subprocess (`cli`: Claude Code over `stream-json`, Codex over its
+app-server protocol). Both are built in and static; this is not a plugin system. The contract
+between the core and a backend is #39.
+
+**The terms decide the shape, not preference.** Anthropic's Claude Code legal page
+(`code.claude.com/docs/en/legal-and-compliance`, read 2026-09-18) permits an end user signing
+in to the unmodified Claude Code binary with their own subscription, including inside a
+product that runs it, and forbids three things: developers — Agent SDK users included —
+routing requests through Free, Pro or Max credentials; offering Claude.ai login inside one's
+own application; and collecting, storing or intermediating Claude.ai credentials or session
+tokens. Third-party harnesses that used subscription OAuth against the API directly were cut
+off on 2026-04-04. So a Claude subscription reaches this project in exactly one way: the
+`cli` backend, with the binary unmodified, the sign-in completed through Claude Code's own
+flow, and the core creating the per-account directory and never reading from it (#41).
+**Rejected:** a Claude-subscription credential provider for the native backend, in any form.
+The boundary is the substance — unmodified binary, the user's own sign-in, no credential
+intermediation — not the name of the package used to reach it.
+
+OpenAI tolerates ChatGPT-subscription sign-in in third-party harnesses today and says so
+publicly; no term this project can cite guarantees it. Codex therefore owns that credential
+too (#47), and the backend must work unchanged with an API key when the lane closes. A
+native ChatGPT-OAuth provider is not built.
+
+**What `cli` does not carry.** The approval promise in `architecture.md` — every write
+diffed, every command waited on — is the native backend's. A CLI executes whatever its own
+rules auto-allow and, per its hooks reference, whatever runs while a hook fails to start or
+times out. The core states per backend what it enforces and what it delegates (#40) and does
+not describe the delegated set as carrying the native guarantee. Likewise `auth.md`'s rules
+on where tokens may live are the native backend's; a CLI writes its credential where it
+writes it, and the core neither reads it nor promises anything about it (#41). Tools the
+core insists on policing — the browser first — reach a CLI run through one bridge MCP server
+the core exposes, never through a server the CLI starts itself (#44).
+
+**Initial scope, deliberately narrow.** The native backend speaks OpenAI-compatible endpoints
+only; an `anthropic_messages` transport was considered and deferred, since nothing it enables
+is needed while Claude arrives through its own binary. `architecture.md`'s "no non-OpenAI
+dialects in the core" stands.
+
+**Order, and the guard.** #21 first, because both backends land their approvals in it. Then
+one CLI backend end to end (#46), then the second and the inbox (#47, #43), then the native
+loop (M3). The native loop is what carries the credential lifecycle this file calls the reason
+the project exists, and the token-command entry above already predicted the failure mode
+where a surface ships and the rest never does. It applies here with more force: the CLI
+backends will be useful before the native one exists. The guard is the milestone order and
+nothing stronger; if M3 is still open when M4 closes, that is the signal, and this is where
+it was predicted.
+
+**Rules out:** a backend abstraction that lets the code above it branch on which backend a
+run is on; an account model that forces a CLI's authentication into `CredentialProvider`
+(#45); starting a run on a different account than the one its stored session was created
+under; any code path in this project that reads, copies or moves a credential another
+program stored.
 
 ## Rejected: rendering an agent-driven UI description format natively
 
