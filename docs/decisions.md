@@ -473,8 +473,8 @@ recorded the contradiction and three candidate mechanisms. This entry picks one 
 what it does and does not guarantee, before #15, #16, #17 and #46 build on it.
 
 **The mechanism.** The core asks for consent through a presenter it defines and the shell
-implements; on macOS the shell opens a native modal (`NSAlert`, via `rfd` or equivalent) from
-Rust, and consumes the answer in Rust. The answer never transits IPC. There is no
+implements; on macOS the shell opens a native modal (`NSAlert`, driven from Rust through
+`objc2`) and consumes the answer in Rust. The answer never transits IPC. There is no
 `approve`-shaped application command, and the WebView is not granted any dialog plugin
 permission — `tauri-plugin-dialog`'s JavaScript API hands the result back to the WebView,
 which is the path this entry closes. The WebView's part in an approval is display and focus:
@@ -506,25 +506,27 @@ What the gate returns is a single-use, in-memory token bound to that value, and 
 affirmative execution entry point demands the token: the native executor, the *allow* reply
 the core sends to a CLI's approval request (Claude Code's permission-prompt tool result,
 Codex's `requestApproval` decision — on a CLI backend that reply *is* the execution), and a
-bridge forward to a tool the core polices (#44). On a CLI backend the request value is what
-the CLI put in its approval request and nothing more: Codex's carries a command string, a
+bridge forward to a tool the core polices (#44). On a CLI backend the CLI's part of the
+request value is what it put in its approval request and nothing more — the core still
+adds its invocation id, the run and the workspace root: Codex's carries a command string, a
 `cwd` and an `environmentId`, not the environment (`codex app-server
 generate-json-schema`, 0.153.4), so the dialog shows exactly that and the token binds
 exactly that, and the environment the command actually runs in is the CLI's — a #40 row,
-not a guarantee this entry can make. And the reply is the plain per-request answer only:
-Codex's decision type also offers `acceptForSession`, an execpolicy amendment and a
-network-policy amendment, and its requests can carry a `grantRoot` or a permission profile
-— each of those is an auto-approve rule the model proposed, wearing an approval's clothes,
-so the core never sends a widening variant, and a grant-shaped request is presented as
-what it is, a rule for the rest of the session, or refused. A *deny* reply is not an
+not a guarantee this entry can make. And the reply is the plain per-request answer only.
+Codex's decision type also offers widening variants — `acceptForSession`, an execpolicy
+amendment, a network-policy amendment — and the core never sends one; its requests can
+carry a `grantRoot` or a permission profile, and a request shaped like that is an
+auto-approve rule the model proposed, wearing an approval's clothes, so it is refused
+before any dialog opens, as `architecture.md`'s "never rules the model proposes" already
+says — the model may ask again for the one operation. A *deny* reply is not an
 execution: it needs no token, and the core always sends one — on decline, on refusal, and
 on presenter failure — because a CLI left without an answer either hangs on the request or,
 for a `PreToolUse` hook, runs the call (#42). There is no way to execute without a token,
-and the token does not survive the process. A request that belongs to no run — a settings write, a
-workspace-root move — is bound to the application instance instead of a run, and dies with
-it. A request the policy auto-runs takes the same path and the same token, minted by the
-gate on policy without a presenter and recorded as policy; the executor cannot tell the two
-apart, which is the point — there is one door.
+and the token does not survive the process. A request that belongs to no run — a settings
+write, a workspace-root move — is bound to the application instance instead of a run, and
+dies with it. A request the policy auto-runs takes the same path and the same token,
+minted by the gate on policy without a presenter and recorded as policy; the executor
+cannot tell the two apart, which is the point — there is one door.
 A token is spent on first use, is void once its run ends or the request is cancelled, and is
 void if a precondition it was minted under no longer holds — the file to be replaced has
 changed or has appeared, the path resolves elsewhere, the target is no longer the kind of
@@ -536,7 +538,7 @@ verifying the precondition and performing the write are one operation — a per-
 write lock held across both — not a check followed by a write; a verify-then-rename is a
 check followed by a write with the window moved, since rename replaces whatever is at the
 path when it runs. The lock serialises the core's own writers, and only those: a shell
-command the core spawned, on any backend, writes to the workspace without taking it, so
+command the core spawned on the native backend writes to the workspace without taking it, so
 what the snapshot guarantees is that the core's write lands on what was verified unless a
 process outside the core changed it inside the window — narrower than "two runs cannot
 slip a change between them", and stated so. On a CLI backend the core performs no write:
@@ -558,8 +560,9 @@ presenter therefore declares a capacity, and the gate refuses a request over it 
 presenter is asked; this is not a property of writes only, since a model-emitted shell
 command has no length bound either (a heredoc, a base64 blob), so a long command is refused
 on the modal exactly as a diff is, and #50 unblocks it too. Which means the write path is
-not shippable on `NSAlert`: `informativeText` does not scroll, `rfd` exposes no accessory
-view, and a diff reduced to a path and a content hash is a checksum the user cannot check
+not shippable on `NSAlert`: `informativeText` does not scroll, an `accessoryView` holding
+a scrolling text view is a presenter of its own rather than a modal with a caption, and a
+diff reduced to a path and a content hash is a checksum the user cannot check
 against the WebView's rendering, so a compromised WebView could show one diff while the
 request carries another. A core-owned presenter that renders a diff — a second window whose
 content is core-generated escaped text, or a native text view — is #50, a blocker for #17
@@ -572,24 +575,25 @@ decides, not the class.
 
 **Presenter rules.** The affirmative is never the default button: the WebView decides *when*
 a request fires and can render "press Return" bait timed to it. On macOS `NSAlert` makes the
-first button added the default and `rfd` 0.17.2 adds them in the order given with no API to
-change that, so the negative is passed first — read from the source. That is a fact about an
-implementation rather than its contract, and `rfd` gives nothing back to assert it on (its
-`NSAlert` is private), so what the shell pins is its own side of it: the button list is
-built by a pure function tested on its value, and the result variant for the first slot maps
-to *decline* — getting the order right without that mapping executes on the Deny click. The
-`rfd` fact itself is pinned by the lockfile. For the same reason — the WebView chooses when a
-request fires — a dialog that has just opened does not accept the affirmative for a short
-settle interval, so a click aimed at one dialog cannot land on the next.
+first button added the default, so the negative is added first. `rfd` 0.17.2 was read as
+the reference for that — its macOS backend adds the buttons in the order given with no API
+to change it — but it is not the presenter: its blocking `show()` returns no handle, so a
+dialog it opened cannot be dismissed by the core, which the withdrawal rule below needs.
+The shell drives `NSAlert` itself, through `objc2`, holding the alert so it can abort the
+modal session. What it pins is its own side of that: the button list is built by a pure
+function tested on its value, and the response for the first slot maps to *decline* —
+getting the order right without that mapping executes on the Deny click. For the same
+reason — the WebView chooses when a request fires — a dialog that has just opened does not
+accept the affirmative for a short settle interval, so a click aimed at one dialog cannot
+land on the next.
 Presentation is serialised, one dialog at a time, per process; the core is not.
 A run waiting on a dialog blocks only itself; a run that ends withdraws its pending requests,
 and a withdrawn request's dialog, if it is the one on screen, is dismissed by the core
-rather than left for the user to clear — which `rfd`'s blocking `show()` cannot do, it
-returns no handle, so the shell either drives `NSAlert` with one it can abort or accepts
-that a stale dialog stalls the queue; the entry requires the former. A queue that grows past
-a limit refuses rather than stacks, and nothing is approved by timeout. Every dialog names
-the run and the backend it is on, in labels the core generates and keeps apart from any
-model-produced text — this is where #40's "the UI shows which backend" is met for the
+rather than left for the user to clear and to stall the queue behind it. A queue that grows
+past a limit refuses rather than stacks, and nothing is approved by timeout. Every dialog
+names the run it belongs to — or the application, for a request that has no run — and the
+backend it is on, in labels the core generates and keeps apart from any model-produced
+text — this is where #40's "the UI shows which backend" is met for the
 approvals that reach a dialog; a run that never asks (Codex under `never`) shows its backend
 in the run list, and that is #40's to state. Model-produced text is shown through a
 lossless, reversible escape — every byte the executor will receive is recoverable from what
@@ -619,8 +623,9 @@ credential provider command, gateway URL, workspace root, auto-approve rule, run
 from an inline profile — a presenter that always declines executes nothing, and its paired
 control, a presenter that always approves, executes exactly once with the bytes it was
 shown (a suite of negatives alone is green against a gate that is never wired); a presenter
-that returns an error, an unknown value, or nothing within the deadline mints nothing and
-the request ends refused, not pending; a token minted for one request does not execute
+that returns an error or an unknown value mints nothing and the request ends refused, not
+pending, and one that never answers mints nothing however long it is waited on; a token
+minted for one request does not execute
 another with identical content, in another run, or under another workspace root; a token is
 spent on first use; a token minted and then overtaken — its request cancelled, its run ended
 — is refused when presented; a token for a write is void once the target file has changed,
@@ -630,8 +635,9 @@ which a check-then-write fails; an answer arriving after cancellation mints noth
 request in the refused tier never reaches the presenter, and one re-classified into it
 while pending is refused whatever the answer; a request over the presenter's capacity is
 refused before the presenter is asked; the rendered text round-trips to the executor's
-bytes and shows U+202E, U+0000 and a zero-width joiner visibly; the render names the run
-and the backend; at most one `ask` is outstanding and the request past the queue limit is
+bytes and shows U+202E, U+0000 and a zero-width joiner visibly; the render names the run,
+or the application, and the backend; at most one presentation is outstanding at a time
+and the request past the queue limit is
 refused; a CLI *allow* reply and a bridge forward are refused without a token exactly as the
 native executor is, and a declined, refused or presenter-failed request on a CLI backend
 produces one well-formed *deny* reply on a fake transport. The compile-time half is pinned

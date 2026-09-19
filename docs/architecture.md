@@ -110,9 +110,10 @@ rule, decided under "Consent is a native dialog the core owns" in `decisions.md`
   the request is cancelled, or a precondition changes. On the native backend verifying the
   precondition and performing the write are one operation under a write lock, so the core's
   write lands on what was verified — a mismatch is a new request; a shell command writes
-  outside that lock, and on a CLI backend the CLI writes after the reply, so neither carries
-  the guarantee; that is a row in #40's table. A CLI's request is shown as the CLI supplied
-  it, and the reply is the plain per-request answer, never a session-wide grant.
+  outside that lock and carries no such guarantee. On a CLI backend the CLI writes after the
+  reply, so that cell carries none either — a row in #40's table. A CLI's request is shown
+  as the CLI supplied it; the reply is the plain per-request answer, and a request shaped
+  as a session-wide grant is refused.
 - **The dialog shows the whole of what will run**, byte-exact through a lossless escape,
   never summarised; a request over the presenter's capacity is refused, not approved on a
   hash. Most shell commands and settings writes fit a modal; a diff does not, and neither
