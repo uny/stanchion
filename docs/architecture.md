@@ -5,7 +5,7 @@
 ```
 ┌─────────────────────────────────────────────┐
 │  WebView (TypeScript / React)               │
-│  conversation · diff review · approval UI   │
+│  conversation · diff review · pending asks  │
 │  markdown · syntax highlighting             │
 │  no credentials, no filesystem, no network  │
 └───────────────────┬─────────────────────────┘
@@ -31,9 +31,10 @@ the gateway, and never touches the filesystem directly. Every capability it has 
 IPC command the core can refuse.
 
 That last sentence is the design, and it has two halves. It says nothing about *who* caused
-a call — a separate problem, and the approval rule below is what answers it. *Which* commands are reachable, on the other hand, is now enforced: the application
-command ACL is switched on, so a command the capability does not grant is rejected at the
-IPC boundary rather than skipped past. The rule that keeps it that way, and the mechanism
+a call — a separate problem, and the approval rule below is what answers it. *Which*
+commands are reachable, on the other hand, is now enforced: the application command ACL is
+switched on, so a command the capability does not grant is rejected at the IPC boundary
+rather than skipped past. The rule that keeps it that way, and the mechanism
 that made the unenforced state possible, are in AGENTS.md, section 5.
 
 ## Run backends
@@ -87,8 +88,8 @@ Each tool declares a risk class. Reads inside the workspace run without asking. 
 diff and wait. Shell commands wait, and the approval carries the exact command. Approvals are
 per-invocation by default, with opt-in rules the user writes, never rules the model proposes.
 
-**An IPC message is not consent.** The approval UI is rendered in the WebView, which is the
-untrusted surface. Model output that achieves script execution there can invoke any command
+**An IPC message is not consent.** The pending request is displayed in the WebView, which is
+the untrusted surface. Model output that achieves script execution there can invoke any command
 the frontend is allowed to invoke, and the core cannot tell a scripted call from a click — so
 a bare `approve(tool_call_id)` command would let a model approve its own shell command. The
 rule, decided under "Consent is a native dialog the core owns" in `decisions.md` (#21):
@@ -98,27 +99,33 @@ rule, decided under "Consent is a native dialog the core owns" in `decisions.md`
   implements — on macOS a native modal opened from Rust and answered in Rust. The answer
   never transits IPC; no application command takes an approval decision as an argument, and
   the WebView holds no dialog permission. The WebView displays a pending request; it cannot
-  answer it. Every execution entry point demands the token — the native executor, the reply
-  to a CLI's approval request, a bridge forward to a core-policed tool (#44).
+  answer it. Every affirmative execution entry point demands the token — the native
+  executor, the *allow* reply to a CLI's approval request, a bridge forward to a core-policed
+  tool (#44). A *deny* reply needs none and is always sent. Auto-run takes the same door,
+  with a token the gate mints on policy and records as policy.
 - **The token is bound to the request the core built**, not to a call id the model supplied:
-  a core-issued invocation id, the run, the workspace root, resolved paths, and for a write
-  the hash of the content to be written and of the file to be replaced. Single use, memory
-  only, void when the run ends, the request is cancelled, or a precondition changes.
-  Verifying the precondition and performing the write are one operation, so two runs
-  sharing a workspace cannot slip a change between them — a mismatch is a new request.
-- **The dialog shows the whole of what will run**, byte-exact, never summarised; a request the
-  presenter cannot show in full is refused, not approved on a hash. Shell commands and
-  settings writes fit a modal; a diff does not, so a core-owned presenter that renders one
-  (#50) blocks #17 and the write cells of a CLI backend (#46).
+  a core-issued invocation id, the run, the workspace root, resolved paths, a command's
+  directory and environment, and for a write the hash of the content to be written and of
+  the file to be replaced, or its absence. Single use, memory only, void when the run ends,
+  the request is cancelled, or a precondition changes. On the native backend verifying the
+  precondition and performing the write are one operation under a write lock, so two runs
+  sharing a workspace cannot slip a change between them — a mismatch is a new request. On a
+  CLI backend the CLI writes after the reply and no such guarantee holds; that is a row in
+  #40's table.
+- **The dialog shows the whole of what will run**, byte-exact through a lossless escape,
+  never summarised; a request over the presenter's capacity is refused, not approved on a
+  hash. Most shell commands and settings writes fit a modal; a diff does not, and neither
+  does a long command, so a core-owned presenter that renders more (#50) blocks #17 and the
+  write cells of a CLI backend (#46).
 - **Consent is not authorization.** The refused tier (#33) is rejected before any dialog
-  opens; auto-run is policy, not consent; the affirmative is never the default button;
-  nothing is approved by timeout; if the presenter fails, nothing executes.
+  opens; the affirmative is never the default button and is not accepted in the instant a
+  dialog opens; nothing is approved by timeout; if the presenter fails, nothing executes.
 - **Scope.** This guarantees that consent cannot be forged from the WebView. A process that
   can synthesise OS input is outside it. On a CLI backend the dialog answers only the
   requests the CLI delegates to the core; which those are is the table under #40.
 
 **The rule covers anything that decides an approval was unnecessary — and enumerating those
-is how one gets missed.** Gating the `approve` call alone is not enough: a forged message that
+is how one gets missed.** Gating tool execution alone is not enough: a forged message that
 widens an auto-run rule, or that moves the workspace root, reaches the same privileged effect
 with no approval ever requested. But so does settings state that never enters the loop at
 all. Two such paths are already in this design:

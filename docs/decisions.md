@@ -495,23 +495,40 @@ the preview window); they are not the consent mechanism.
 core-owned-state class of `architecture.md` — a tool call, a settings write that names a
 program or a credential destination, a workspace-root move, an auto-approve rule, and
 starting a run from anything other than a stored configuration selected by reference — asks
-the gate. The gate holds the request as an immutable value it built itself: a core-issued
-invocation id, the run, the workspace root, every path already resolved, and for a write the
-hash of the content it will write and of the file it will replace. What the gate returns is
-a single-use, in-memory token bound to that value, and every execution entry point demands
-the token: the native executor, the reply the core sends to a CLI's approval request (Claude
-Code's permission-prompt tool result, Codex's `requestApproval` decision — on a CLI backend
-that reply *is* the execution), and a bridge forward to a tool the core polices (#44). There
-is no way to execute without one, and the token does not survive the process.
+the gate. (That last item narrows the run-is-a-value entry's "never assemble one" to "never
+without consent": an inline profile is shown, base URL and all, and may be approved.) The
+gate holds the request as an immutable value it built itself: a core-issued invocation id,
+the run, the workspace root, every path already resolved, for a command the program, its
+arguments, the directory it runs in and the environment it is given (an MCP server entry's
+`env` is part of the entry, not an aside), and for a write the hash of the content it will
+write and of the file it will replace — or that file's absence, when the write creates it.
+What the gate returns is a single-use, in-memory token bound to that value, and every
+affirmative execution entry point demands the token: the native executor, the *allow* reply
+the core sends to a CLI's approval request (Claude Code's permission-prompt tool result,
+Codex's `requestApproval` decision — on a CLI backend that reply *is* the execution), and a
+bridge forward to a tool the core polices (#44). A *deny* reply is not an execution: it
+needs no token, and the core always sends one — on decline, on refusal, and on presenter
+failure — because a CLI left without an answer either hangs on the request or, for a
+`PreToolUse` hook, runs the call (#42). There is no way to execute without a token, and the
+token does not survive the process. A request that belongs to no run — a settings write, a
+workspace-root move — is bound to the application instance instead of a run, and dies with
+it. A request the policy auto-runs takes the same path and the same token, minted by the
+gate on policy without a presenter and recorded as policy; the executor cannot tell the two
+apart, which is the point — there is one door.
 A token is spent on first use, is void once its run ends or the request is cancelled, and is
 void if a precondition it was minted under no longer holds — the file to be replaced has
-changed, the path resolves elsewhere. This is what answers the shared-workspace race that the
-concurrency entry left open for #21 and #16: the approval snapshots what was diffed, and a
-write that no longer matches the snapshot is a new request. The check is only as good as its
-distance from the write, so verifying the precondition and performing the write are one
-operation — a per-workspace write lock held across both, or a verify-then-rename — not a
-check followed by a write. A late answer to a dialog whose request was cancelled mints
-nothing.
+changed or has appeared, the path resolves elsewhere, the target is no longer the kind of
+thing it was (a symlink or a directory where a file was). This is what answers the
+shared-workspace race that the concurrency entry left open for #21 and #16, on the native
+backend: the approval snapshots what was diffed, and a write that no longer matches the
+snapshot is a new request. The check is only as good as its distance from the write, so
+verifying the precondition and performing the write are one operation — a per-workspace
+write lock held across both — not a check followed by a write; a verify-then-rename is a
+check followed by a write with the window moved, since rename replaces whatever is at the
+path when it runs. On a CLI backend the core performs no write: the CLI does, after the
+reply, and no lock the core holds spans it. That cell carries no snapshot guarantee, and it
+is a row for #40's table, not something this entry closes. A late answer to a dialog whose
+request was cancelled mints nothing.
 
 **Consent is not authorization.** The tier the core refuses regardless of approval (#33) is
 refused before any dialog is shown; an answer to a dialog that should not have opened is
@@ -519,9 +536,14 @@ ignored. Auto-run decisions are recorded as policy, never as consent. If policy 
 a request is pending, the request is re-classified before its answer is honoured.
 
 **What the dialog attests is the whole of what runs.** The dialog carries the exact request:
-a shell command in full, the same string the executor receives (#16); a settings write as the
-full new value and the old one. A request the presenter cannot show in full is not approvable
-through it — it is refused with that reason, not summarised. Which means the write path is
+a shell command in full, the same string the executor receives (#16), with the directory and
+the environment it will run in; a settings write as the full new value and the old one; an
+MCP server entry as program, arguments and environment. A request the presenter cannot show
+in full is not approvable through it — it is refused with that reason, not summarised. The
+presenter therefore declares a capacity, and the gate refuses a request over it before the
+presenter is asked; this is not a property of writes only, since a model-emitted shell
+command has no length bound either (a heredoc, a base64 blob), so a long command is refused
+on the modal exactly as a diff is, and #50 unblocks it too. Which means the write path is
 not shippable on `NSAlert`: `informativeText` does not scroll, `rfd` exposes no accessory
 view, and a diff reduced to a path and a content hash is a checksum the user cannot check
 against the WebView's rendering, so a compromised WebView could show one diff while the
@@ -531,21 +553,38 @@ rather than a follow-up, and it inherits #25 before it can be a window. It gates
 backend's write cells too: a write Claude Code delegates through its permission tool, or a
 Codex `requestApproval` on a write, lands in the same presenter and is refused until #50
 exists, so #46's done-when either excludes writes or waits on it. Shell commands, MCP server
-entries, credential provider commands and gateway URLs are short enough for the modal.
+entries, credential provider commands and gateway URLs usually fit the modal; the capacity
+decides, not the class.
 
 **Presenter rules.** The affirmative is never the default button: the WebView decides *when*
 a request fires and can render "press Return" bait timed to it. On macOS `NSAlert` makes the
 first button added the default and `rfd` 0.17.2 adds them in the order given with no API to
-change that, so the negative is passed first — read from the source, and pinned by a
-shell-side test on the button order, since it is a fact about an implementation rather than
-its contract. Presentation is serialised, one dialog at a time, per process; the core is not.
-A run waiting on a dialog blocks only itself, a run that ends withdraws its pending requests,
-a queue that grows past a limit refuses rather than stacks, and nothing is approved by
-timeout. Every dialog names the run and the backend it is on — this is where #40's "the UI
-shows which backend" is satisfied, because this is where the user reads approvals.
-Model-produced text is shown byte-exact with control and bidi characters made visible, and is
-never truncated from the tail. If the presenter fails — cannot open, returns nothing,
-returns something unexpected — nothing executes.
+change that, so the negative is passed first — read from the source. That is a fact about an
+implementation rather than its contract, and `rfd` gives nothing back to assert it on (its
+`NSAlert` is private), so what the shell pins is its own side of it: the button list is
+built by a pure function tested on its value, and the result variant for the first slot maps
+to *decline* — getting the order right without that mapping executes on the Deny click. The
+`rfd` fact itself is pinned by the lockfile. For the same reason — the WebView chooses when a
+request fires — a dialog that has just opened does not accept the affirmative for a short
+settle interval, so a click aimed at one dialog cannot land on the next.
+Presentation is serialised, one dialog at a time, per process; the core is not.
+A run waiting on a dialog blocks only itself; a run that ends withdraws its pending requests,
+and a withdrawn request's dialog, if it is the one on screen, is dismissed by the core
+rather than left for the user to clear — which `rfd`'s blocking `show()` cannot do, it
+returns no handle, so the shell either drives `NSAlert` with one it can abort or accepts
+that a stale dialog stalls the queue; the entry requires the former. A queue that grows past
+a limit refuses rather than stacks, and nothing is approved by timeout. Every dialog names
+the run and the backend it is on, in labels the core generates and keeps apart from any
+model-produced text — this is where #40's "the UI shows which backend" is met for the
+approvals that reach a dialog; a run that never asks (Codex under `never`) shows its backend
+in the run list, and that is #40's to state. Model-produced text is shown through a
+lossless, reversible escape — every byte the executor will receive is recoverable from what
+is displayed, and control, format and bidi characters and any non-ASCII are made visible,
+since a homoglyph or a zero-width joiner hides as well as U+202E does. A labelled field the
+core parsed may be shown *alongside* the raw bytes, never instead of them — the host of a
+gateway URL, so that `https://api.example.com@evil.example/` reads as what it is. Nothing is
+truncated from the tail. If the presenter fails — cannot open, returns nothing, returns
+something unexpected — nothing executes, and on a CLI backend the deny reply still goes out.
 
 **Scope, stated so it is not overread.** This decides *who approved*, for requests that reach
 the core. It is a guarantee about the IPC boundary: consent cannot be forged by script in the
@@ -554,26 +593,47 @@ subprocess with accessibility access could press the button; that is outside thi
 model and outside what any in-process mechanism could address. And on a CLI backend the
 dialog sees only what the CLI delegates: #42 measured that Codex under `never` raises no
 approval request in any cell, that Claude Code's `PreToolUse` hook is fail-open and silent in
-every failure mode, and that both re-issue the last cut command on resume after a crash or
-an interrupt. A
-re-issue is a fresh request and gets a fresh dialog — on the native backend always, on a CLI
-backend only in the cells that delegate. Which cells those are is #40's table, and nothing in
-this entry moves a row of it.
+every failure mode, and that on resume the model may re-issue the last cut command on its
+own — Codex did after `turn/interrupt`, Claude Code did after a crash and asked first after
+a SIGINT. A re-issue is a fresh request and gets a fresh dialog — on the native backend
+always, on a CLI backend only in the cells that delegate. Which cells those are is #40's
+table, and nothing in this entry moves a row of it.
 
-**How this is tested, and where.** In `crates/core`, against a fake presenter: a presenter
-that always declines executes nothing, for one request per class — shell command, MCP server
-entry, credential provider command, gateway URL, workspace root, auto-approve rule, run
-started from an inline profile; a token minted for one request does not execute another with
-identical content; a token is spent on first use; a token for a write is void once the target
-file has changed; an answer arriving after cancellation mints nothing; a request in the refused
-tier never reaches the presenter; a CLI approval reply and a bridge forward are refused
-without a token exactly as the native executor is. In `src-tauri`: the capability grants no command that could
-carry an answer and no `dialog:` permission, the application manifest is non-empty (#24), and
-the negative button is first. The capability assertions are auxiliary — the load-bearing test
-is that every execution entry point demands a token, which the type makes a compile error
-and the fake-presenter tests make a runtime one.
+**How this is tested, and where.** In `crates/core`, against a fake presenter that records
+what it was shown: for one request per class — shell command, file write, MCP server entry,
+credential provider command, gateway URL, workspace root, auto-approve rule, run started
+from an inline profile — a presenter that always declines executes nothing, and its paired
+control, a presenter that always approves, executes exactly once with the bytes it was
+shown (a suite of negatives alone is green against a gate that is never wired); a presenter
+that returns an error, an unknown value, or nothing within the deadline mints nothing and
+the request ends refused, not pending; a token minted for one request does not execute
+another with identical content, in another run, or under another workspace root; a token is
+spent on first use; a token minted and then overtaken — its request cancelled, its run ended
+— is refused when presented; a token for a write is void once the target file has changed,
+has appeared, or is reached through a path that now resolves elsewhere; a write is refused
+or serialised when the target is mutated from a second thread between verify and write,
+which a check-then-write fails; an answer arriving after cancellation mints nothing; a
+request in the refused tier never reaches the presenter, and one re-classified into it
+while pending is refused whatever the answer; a request over the presenter's capacity is
+refused before the presenter is asked; the rendered text round-trips to the executor's
+bytes and shows U+202E, U+0000 and a zero-width joiner visibly; the render names the run
+and the backend; at most one `ask` is outstanding and the request past the queue limit is
+refused; a CLI *allow* reply and a bridge forward are refused without a token exactly as the
+native executor is, and a declined, refused or presenter-failed request on a CLI backend
+produces one well-formed *deny* reply on a fake transport. The compile-time half is pinned
+too: a compile-fail test constructs the token outside the gate and calls each of the three
+entry points without one, and the token is neither `Clone` nor serialisable, since either
+would void "spent on first use" and "does not survive the process" without a runtime test
+noticing. In `src-tauri`: the capability grants no `dialog:` permission, the application
+manifest is non-empty (#24), the button list is built negative-first, and the first-slot
+result maps to decline. The capability assertions are auxiliary — the load-bearing test is
+that every execution entry point demands a token, which the type makes a compile error and
+the fake-presenter tests make a runtime one.
 
-**Rules out:** any IPC command whose argument is an approval decision; a presenter opened
-from the WebView side of the boundary; execution on a request the presenter could not show in
-full; a summary, hash or line count standing in for the content being approved; approving on
-timeout; a token that survives a restart or is minted by anything but the gate.
+**Rules out:** an approval decision reaching the core over any IPC path — a command
+argument, an event, a channel payload; a presenter opened from the WebView side of the
+boundary; execution on a request the presenter could not show in full; a summary, hash or
+line count standing in for the content being approved (a labelled addition beside the bytes
+is not a substitute for them); an affirmative default button; approving on timeout;
+execution on presenter failure; a token honoured in a run or a workspace other than the one
+it was minted in, that survives a restart, or that is minted by anything but the gate.
