@@ -552,10 +552,14 @@ ignored. Auto-run decisions are recorded as policy, never as consent. If policy 
 a request is pending, the request is re-classified before its answer is honoured.
 
 **What the dialog attests is the whole of what runs.** The dialog carries the exact request:
-a shell command in full, the same string the executor receives (#16), with the directory and
-the environment it will run in; a settings write as the full new value and the old one; an
-MCP server entry as program, arguments and environment. A request the presenter cannot show
-in full is not approvable through it — it is refused with that reason, not summarised. The
+a shell command in full, the same string the executor receives (#16); a settings write as
+the full new value and the old one; an MCP server entry as program, arguments and its `env`,
+since that is model input. Shown and bound are not the same set: the directory and the
+environment the core gives a native command are policy, not something the model chose, so
+they are hashed into the token and stated once in settings rather than rendered on every
+dialog — dozens of lines of environment on each command would trip the capacity rule
+below and block #16 on #50. A request the presenter cannot show in full is not approvable
+through it — it is refused with that reason, not summarised. The
 presenter therefore declares a capacity, and the gate refuses a request over it before the
 presenter is asked; this is not a property of writes only, since a model-emitted shell
 command has no length bound either (a heredoc, a base64 blob), so a long command is refused

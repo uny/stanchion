@@ -105,7 +105,8 @@ rule, decided under "Consent is a native dialog the core owns" in `decisions.md`
   with a token the gate mints on policy and records as policy.
 - **The token is bound to the request the core built**, not to a call id the model supplied:
   a core-issued invocation id, the run, the workspace root, resolved paths, a command's
-  directory and environment, and for a write the hash of the content to be written and of
+  directory and environment (bound, and shown only where the model supplied them, as in an
+  MCP entry's `env`), and for a write the hash of the content to be written and of
   the file to be replaced, or its absence. Single use, memory only, void when the run ends,
   the request is cancelled, or a precondition changes. On the native backend verifying the
   precondition and performing the write are one operation under a write lock, so the core's
