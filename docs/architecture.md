@@ -108,10 +108,11 @@ rule, decided under "Consent is a native dialog the core owns" in `decisions.md`
   directory and environment, and for a write the hash of the content to be written and of
   the file to be replaced, or its absence. Single use, memory only, void when the run ends,
   the request is cancelled, or a precondition changes. On the native backend verifying the
-  precondition and performing the write are one operation under a write lock, so two runs
-  sharing a workspace cannot slip a change between them — a mismatch is a new request. On a
-  CLI backend the CLI writes after the reply and no such guarantee holds; that is a row in
-  #40's table.
+  precondition and performing the write are one operation under a write lock, so the core's
+  write lands on what was verified — a mismatch is a new request; a shell command writes
+  outside that lock, and on a CLI backend the CLI writes after the reply, so neither carries
+  the guarantee; that is a row in #40's table. A CLI's request is shown as the CLI supplied
+  it, and the reply is the plain per-request answer, never a session-wide grant.
 - **The dialog shows the whole of what will run**, byte-exact through a lossless escape,
   never summarised; a request over the presenter's capacity is refused, not approved on a
   hash. Most shell commands and settings writes fit a modal; a diff does not, and neither

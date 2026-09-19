@@ -506,11 +506,21 @@ What the gate returns is a single-use, in-memory token bound to that value, and 
 affirmative execution entry point demands the token: the native executor, the *allow* reply
 the core sends to a CLI's approval request (Claude Code's permission-prompt tool result,
 Codex's `requestApproval` decision — on a CLI backend that reply *is* the execution), and a
-bridge forward to a tool the core polices (#44). A *deny* reply is not an execution: it
-needs no token, and the core always sends one — on decline, on refusal, and on presenter
-failure — because a CLI left without an answer either hangs on the request or, for a
-`PreToolUse` hook, runs the call (#42). There is no way to execute without a token, and the
-token does not survive the process. A request that belongs to no run — a settings write, a
+bridge forward to a tool the core polices (#44). On a CLI backend the request value is what
+the CLI put in its approval request and nothing more: Codex's carries a command string, a
+`cwd` and an `environmentId`, not the environment (`codex app-server
+generate-json-schema`, 0.153.4), so the dialog shows exactly that and the token binds
+exactly that, and the environment the command actually runs in is the CLI's — a #40 row,
+not a guarantee this entry can make. And the reply is the plain per-request answer only:
+Codex's decision type also offers `acceptForSession`, an execpolicy amendment and a
+network-policy amendment, and its requests can carry a `grantRoot` or a permission profile
+— each of those is an auto-approve rule the model proposed, wearing an approval's clothes,
+so the core never sends a widening variant, and a grant-shaped request is presented as
+what it is, a rule for the rest of the session, or refused. A *deny* reply is not an
+execution: it needs no token, and the core always sends one — on decline, on refusal, and
+on presenter failure — because a CLI left without an answer either hangs on the request or,
+for a `PreToolUse` hook, runs the call (#42). There is no way to execute without a token,
+and the token does not survive the process. A request that belongs to no run — a settings write, a
 workspace-root move — is bound to the application instance instead of a run, and dies with
 it. A request the policy auto-runs takes the same path and the same token, minted by the
 gate on policy without a presenter and recorded as policy; the executor cannot tell the two
@@ -525,10 +535,14 @@ snapshot is a new request. The check is only as good as its distance from the wr
 verifying the precondition and performing the write are one operation — a per-workspace
 write lock held across both — not a check followed by a write; a verify-then-rename is a
 check followed by a write with the window moved, since rename replaces whatever is at the
-path when it runs. On a CLI backend the core performs no write: the CLI does, after the
-reply, and no lock the core holds spans it. That cell carries no snapshot guarantee, and it
-is a row for #40's table, not something this entry closes. A late answer to a dialog whose
-request was cancelled mints nothing.
+path when it runs. The lock serialises the core's own writers, and only those: a shell
+command the core spawned, on any backend, writes to the workspace without taking it, so
+what the snapshot guarantees is that the core's write lands on what was verified unless a
+process outside the core changed it inside the window — narrower than "two runs cannot
+slip a change between them", and stated so. On a CLI backend the core performs no write:
+the CLI does, after the reply, and no lock the core holds spans it. That cell carries no
+snapshot guarantee, and it is a row for #40's table, not something this entry closes. A
+late answer to a dialog whose request was cancelled mints nothing.
 
 **Consent is not authorization.** The tier the core refuses regardless of approval (#33) is
 refused before any dialog is shown; an answer to a dialog that should not have opened is
@@ -621,8 +635,10 @@ and the backend; at most one `ask` is outstanding and the request past the queue
 refused; a CLI *allow* reply and a bridge forward are refused without a token exactly as the
 native executor is, and a declined, refused or presenter-failed request on a CLI backend
 produces one well-formed *deny* reply on a fake transport. The compile-time half is pinned
-too: a compile-fail test constructs the token outside the gate and calls each of the three
-entry points without one, and the token is neither `Clone` nor serialisable, since either
+too: one compile-fail fixture per case — constructing the token outside the gate, and
+calling each of the three entry points without one — each asserted on its own diagnostic,
+since one fixture that fails for any reason proves one restriction, not four; and the token
+is neither `Clone` nor serialisable, since either
 would void "spent on first use" and "does not survive the process" without a runtime test
 noticing. In `src-tauri`: the capability grants no `dialog:` permission, the application
 manifest is non-empty (#24), the button list is built negative-first, and the first-slot
