@@ -498,14 +498,20 @@ starting a run from anything other than a stored configuration selected by refer
 the gate. The gate holds the request as an immutable value it built itself: a core-issued
 invocation id, the run, the workspace root, every path already resolved, and for a write the
 hash of the content it will write and of the file it will replace. What the gate returns is
-a single-use, in-memory token bound to that value, and the executor's signature demands the
-token; there is no way to execute without one, and the token does not survive the process.
+a single-use, in-memory token bound to that value, and every execution entry point demands
+the token: the native executor, the reply the core sends to a CLI's approval request (Claude
+Code's permission-prompt tool result, Codex's `requestApproval` decision — on a CLI backend
+that reply *is* the execution), and a bridge forward to a tool the core polices (#44). There
+is no way to execute without one, and the token does not survive the process.
 A token is spent on first use, is void once its run ends or the request is cancelled, and is
 void if a precondition it was minted under no longer holds — the file to be replaced has
-changed, the path resolves elsewhere. This is what closes the shared-workspace race that the
+changed, the path resolves elsewhere. This is what answers the shared-workspace race that the
 concurrency entry left open for #21 and #16: the approval snapshots what was diffed, and a
-write that no longer matches the snapshot is a new request. A late answer to a dialog whose
-request was cancelled mints nothing.
+write that no longer matches the snapshot is a new request. The check is only as good as its
+distance from the write, so verifying the precondition and performing the write are one
+operation — a per-workspace write lock held across both, or a verify-then-rename — not a
+check followed by a write. A late answer to a dialog whose request was cancelled mints
+nothing.
 
 **Consent is not authorization.** The tier the core refuses regardless of approval (#33) is
 refused before any dialog is shown; an answer to a dialog that should not have opened is
@@ -520,9 +526,12 @@ not shippable on `NSAlert`: `informativeText` does not scroll, `rfd` exposes no 
 view, and a diff reduced to a path and a content hash is a checksum the user cannot check
 against the WebView's rendering, so a compromised WebView could show one diff while the
 request carries another. A core-owned presenter that renders a diff — a second window whose
-content is core-generated escaped text, or a native text view — is a blocker for #17, not a
-follow-up, and it inherits #25 before it can be a window. Shell commands, MCP server entries,
-credential provider commands and gateway URLs are short enough for the modal.
+content is core-generated escaped text, or a native text view — is #50, a blocker for #17
+rather than a follow-up, and it inherits #25 before it can be a window. It gates the CLI
+backend's write cells too: a write Claude Code delegates through its permission tool, or a
+Codex `requestApproval` on a write, lands in the same presenter and is refused until #50
+exists, so #46's done-when either excludes writes or waits on it. Shell commands, MCP server
+entries, credential provider commands and gateway URLs are short enough for the modal.
 
 **Presenter rules.** The affirmative is never the default button: the WebView decides *when*
 a request fires and can render "press Return" bait timed to it. On macOS `NSAlert` makes the
@@ -545,7 +554,8 @@ subprocess with accessibility access could press the button; that is outside thi
 model and outside what any in-process mechanism could address. And on a CLI backend the
 dialog sees only what the CLI delegates: #42 measured that Codex under `never` raises no
 approval request in any cell, that Claude Code's `PreToolUse` hook is fail-open and silent in
-every failure mode, and that both re-issue the last cut command on resume after a crash. A
+every failure mode, and that both re-issue the last cut command on resume after a crash or
+an interrupt. A
 re-issue is a fresh request and gets a fresh dialog — on the native backend always, on a CLI
 backend only in the cells that delegate. Which cells those are is #40's table, and nothing in
 this entry moves a row of it.
@@ -556,7 +566,8 @@ entry, credential provider command, gateway URL, workspace root, auto-approve ru
 started from an inline profile; a token minted for one request does not execute another with
 identical content; a token is spent on first use; a token for a write is void once the target
 file has changed; an answer arriving after cancellation mints nothing; a request in the refused
-tier never reaches the presenter. In `src-tauri`: the capability grants no command that could
+tier never reaches the presenter; a CLI approval reply and a bridge forward are refused
+without a token exactly as the native executor is. In `src-tauri`: the capability grants no command that could
 carry an answer and no `dialog:` permission, the application manifest is non-empty (#24), and
 the negative button is first. The capability assertions are auxiliary — the load-bearing test
 is that every execution entry point demands a token, which the type makes a compile error

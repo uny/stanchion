@@ -30,9 +30,8 @@ produced, so it is treated as untrusted. It never holds a credential, never open
 the gateway, and never touches the filesystem directly. Every capability it has is a named
 IPC command the core can refuse.
 
-That last sentence is the design, and one half of it still needs qualifying. It says nothing
-about *who* caused a call — a separate problem, and the approval rule below is what answers
-it. *Which* commands are reachable, on the other hand, is now enforced: the application
+That last sentence is the design, and it has two halves. It says nothing about *who* caused
+a call — a separate problem, and the approval rule below is what answers it. *Which* commands are reachable, on the other hand, is now enforced: the application
 command ACL is switched on, so a command the capability does not grant is rejected at the
 IPC boundary rather than skipped past. The rule that keeps it that way, and the mechanism
 that made the unenforced state possible, are in AGENTS.md, section 5.
@@ -99,17 +98,18 @@ rule, decided under "Consent is a native dialog the core owns" in `decisions.md`
   implements — on macOS a native modal opened from Rust and answered in Rust. The answer
   never transits IPC; no application command takes an approval decision as an argument, and
   the WebView holds no dialog permission. The WebView displays a pending request; it cannot
-  answer it.
+  answer it. Every execution entry point demands the token — the native executor, the reply
+  to a CLI's approval request, a bridge forward to a core-policed tool (#44).
 - **The token is bound to the request the core built**, not to a call id the model supplied:
   a core-issued invocation id, the run, the workspace root, resolved paths, and for a write
   the hash of the content to be written and of the file to be replaced. Single use, memory
-  only, void when the run ends, the request is cancelled, or a precondition changes. Two runs
-  sharing a workspace therefore cannot make the content approved and the content written
-  differ — the mismatch is a new request.
+  only, void when the run ends, the request is cancelled, or a precondition changes.
+  Verifying the precondition and performing the write are one operation, so two runs
+  sharing a workspace cannot slip a change between them — a mismatch is a new request.
 - **The dialog shows the whole of what will run**, byte-exact, never summarised; a request the
   presenter cannot show in full is refused, not approved on a hash. Shell commands and
   settings writes fit a modal; a diff does not, so a core-owned presenter that renders one
-  blocks #17.
+  (#50) blocks #17 and the write cells of a CLI backend (#46).
 - **Consent is not authorization.** The refused tier (#33) is rejected before any dialog
   opens; auto-run is policy, not consent; the affirmative is never the default button;
   nothing is approved by timeout; if the presenter fails, nothing executes.
