@@ -37,6 +37,19 @@ command ACL is switched on, so a command the capability does not grant is reject
 IPC boundary rather than skipped past. The rule that keeps it that way, and the mechanism
 that made the unenforced state possible, are in AGENTS.md, section 5.
 
+## Run backends
+
+A run is driven by one of two backends, chosen per run and carried in the run value:
+
+- `native` — the loop below, in this core, against an OpenAI-compatible endpoint.
+- `cli` — an unmodified vendor binary (Claude Code, Codex) supervised as a subprocess, owning
+  its own loop, tools and credential.
+
+Everything above the backend is shared: the run list, the account (#45), the event stream,
+the inbox (#43), the approval record, process supervision. The contract a backend implements
+is #39. The approval and credential rules in this file and in `auth.md` are stated for the
+native backend; what a CLI backend enforces, delegates or leaves open is tabulated under #40.
+
 ## The agent loop
 
 One loop, parameterised by a per-model profile.
