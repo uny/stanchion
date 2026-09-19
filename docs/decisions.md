@@ -359,3 +359,33 @@ format worth rendering.
 - Several mechanism metaphors — escapement, trunnion, detent — are already taken by active
   projects in the agent-tooling space specifically. **Check for collisions inside this
   domain, not just for global uniqueness.**
+
+## Browser: the user's own Chrome is a tool, reached through MCP first
+
+The loop gets a browser tool, and the browser is the user's own running Chrome with its
+logged-in tabs — not a fresh automation profile. That is the useful case and the dangerous
+one: every action runs with the user's sessions, and every page returned is a document a
+third party wrote.
+
+**Phase A reuses Playwright MCP in `--extension` mode** through the MCP client (#18). The
+server attaches to a running Chrome or Edge via an extension the user installs once; its tools
+carry a `readOnly` annotation. No first-party browser code exists in this phase. The
+annotation is treated as an untrusted hint: it may place a tool in the *observe* tier, never
+take one out of *act*, and the tier the core refuses regardless of approval is matched on the
+call itself (#33). This is not an amendment to "no plugin system beyond MCP"; it is that rule
+being used.
+
+**Phase B — a first-party extension and native messaging host — is gated on limits Phase A
+actually hits**, recorded in #37 rather than assumed. If it is built, the extension is a
+core-owned tool source that holds no policy: it executes what the core sends and returns
+data. It is a second untrusted surface, never a source of consent, and the host process Chrome
+spawns is a third consumer of `crates/core` that the `cargo tree` gate has to cover.
+
+**What this decides elsewhere.** A browser-originated action must be approved by the same
+mechanism as a WebView-originated one, which narrows #21 toward a core-owned native dialog.
+Tool results that carry the user's own session data now reach persistence (#34), and runs as
+values meet one shared browser (#35); both are open and both block Phase A.
+
+**Rules out:** an approval prompt rendered inside the browser; a browser tool whose risk tier
+is decided by the tool's own description; shipping Phase B without a written limit of Phase A
+that it removes.
