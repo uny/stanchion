@@ -465,3 +465,104 @@ values meet one shared browser (#35); both are open and both block Phase A.
 **Rules out:** an approval prompt rendered inside the browser; a browser tool whose risk tier
 is decided by the tool's own description; shipping Phase B without a written limit of Phase A
 that it removes.
+
+## Consent is a native dialog the core owns, and a token only the gate can mint
+
+The WebView renders model output and is untrusted; the approval UI was placed inside it. #21
+recorded the contradiction and three candidate mechanisms. This entry picks one and states
+what it does and does not guarantee, before #15, #16, #17 and #46 build on it.
+
+**The mechanism.** The core asks for consent through a presenter it defines and the shell
+implements; on macOS the shell opens a native modal (`NSAlert`, via `rfd` or equivalent) from
+Rust, and consumes the answer in Rust. The answer never transits IPC. There is no
+`approve`-shaped application command, and the WebView is not granted any dialog plugin
+permission — `tauri-plugin-dialog`'s JavaScript API hands the result back to the WebView,
+which is the path this entry closes. The WebView's part in an approval is display and focus:
+it may show the pending request and the diff, and it may not answer it.
+
+**Rejected: a core-issued nonce.** The nonce has to be unreachable from the context that
+renders model output, which means the approval UI and the rendered output live in separate
+contexts. In `tauri 2.11.5` a second window is not that separation: `plugin:__TAURI_CHANNEL__|fetch`
+is exempt from the ACL and drains an application-wide map by a guessable id (#25), so
+isolation is not something this project can currently rely on. The nonce also proves only
+that the WebView answered — it says nothing about a request from a CLI subprocess or a
+browser extension unless the answer is routed through the WebView anyway, at which point the
+native dialog is the same shape with one fewer trusted piece. Context isolation and a
+restrictive CSP stay required for other reasons (rendered HTML fetching remote resources,
+the preview window); they are not the consent mechanism.
+
+**The gate, and what the token is.** One `Consent` gate in `crates/core`. Everything in the
+core-owned-state class of `architecture.md` — a tool call, a settings write that names a
+program or a credential destination, a workspace-root move, an auto-approve rule, and
+starting a run from anything other than a stored configuration selected by reference — asks
+the gate. The gate holds the request as an immutable value it built itself: a core-issued
+invocation id, the run, the workspace root, every path already resolved, and for a write the
+hash of the content it will write and of the file it will replace. What the gate returns is
+a single-use, in-memory token bound to that value, and the executor's signature demands the
+token; there is no way to execute without one, and the token does not survive the process.
+A token is spent on first use, is void once its run ends or the request is cancelled, and is
+void if a precondition it was minted under no longer holds — the file to be replaced has
+changed, the path resolves elsewhere. This is what closes the shared-workspace race that the
+concurrency entry left open for #21 and #16: the approval snapshots what was diffed, and a
+write that no longer matches the snapshot is a new request. A late answer to a dialog whose
+request was cancelled mints nothing.
+
+**Consent is not authorization.** The tier the core refuses regardless of approval (#33) is
+refused before any dialog is shown; an answer to a dialog that should not have opened is
+ignored. Auto-run decisions are recorded as policy, never as consent. If policy changes while
+a request is pending, the request is re-classified before its answer is honoured.
+
+**What the dialog attests is the whole of what runs.** The dialog carries the exact request:
+a shell command in full, the same string the executor receives (#16); a settings write as the
+full new value and the old one. A request the presenter cannot show in full is not approvable
+through it — it is refused with that reason, not summarised. Which means the write path is
+not shippable on `NSAlert`: `informativeText` does not scroll, `rfd` exposes no accessory
+view, and a diff reduced to a path and a content hash is a checksum the user cannot check
+against the WebView's rendering, so a compromised WebView could show one diff while the
+request carries another. A core-owned presenter that renders a diff — a second window whose
+content is core-generated escaped text, or a native text view — is a blocker for #17, not a
+follow-up, and it inherits #25 before it can be a window. Shell commands, MCP server entries,
+credential provider commands and gateway URLs are short enough for the modal.
+
+**Presenter rules.** The affirmative is never the default button: the WebView decides *when*
+a request fires and can render "press Return" bait timed to it. On macOS `NSAlert` makes the
+first button added the default and `rfd` 0.17.2 adds them in the order given with no API to
+change that, so the negative is passed first — read from the source, and pinned by a
+shell-side test on the button order, since it is a fact about an implementation rather than
+its contract. Presentation is serialised, one dialog at a time, per process; the core is not.
+A run waiting on a dialog blocks only itself, a run that ends withdraws its pending requests,
+a queue that grows past a limit refuses rather than stacks, and nothing is approved by
+timeout. Every dialog names the run and the backend it is on — this is where #40's "the UI
+shows which backend" is satisfied, because this is where the user reads approvals.
+Model-produced text is shown byte-exact with control and bidi characters made visible, and is
+never truncated from the tail. If the presenter fails — cannot open, returns nothing,
+returns something unexpected — nothing executes.
+
+**Scope, stated so it is not overread.** This decides *who approved*, for requests that reach
+the core. It is a guarantee about the IPC boundary: consent cannot be forged by script in the
+WebView. It is not a guarantee against a process that can synthesise OS input — a CLI
+subprocess with accessibility access could press the button; that is outside this threat
+model and outside what any in-process mechanism could address. And on a CLI backend the
+dialog sees only what the CLI delegates: #42 measured that Codex under `never` raises no
+approval request in any cell, that Claude Code's `PreToolUse` hook is fail-open and silent in
+every failure mode, and that both re-issue the last cut command on resume after a crash. A
+re-issue is a fresh request and gets a fresh dialog — on the native backend always, on a CLI
+backend only in the cells that delegate. Which cells those are is #40's table, and nothing in
+this entry moves a row of it.
+
+**How this is tested, and where.** In `crates/core`, against a fake presenter: a presenter
+that always declines executes nothing, for one request per class — shell command, MCP server
+entry, credential provider command, gateway URL, workspace root, auto-approve rule, run
+started from an inline profile; a token minted for one request does not execute another with
+identical content; a token is spent on first use; a token for a write is void once the target
+file has changed; an answer arriving after cancellation mints nothing; a request in the refused
+tier never reaches the presenter. In `src-tauri`: the capability grants no command that could
+carry an answer and no `dialog:` permission, the application manifest is non-empty (#24), and
+the negative button is first. The capability assertions are auxiliary — the load-bearing test
+is that every execution entry point demands a token, which the type makes a compile error
+and the fake-presenter tests make a runtime one.
+
+**Rules out:** any IPC command whose argument is an approval decision; a presenter opened
+from the WebView side of the boundary; execution on a request the presenter could not show in
+full; a summary, hash or line count standing in for the content being approved; approving on
+timeout; a token that survives a restart or is minted by anything but the gate.

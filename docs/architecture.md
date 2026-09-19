@@ -92,12 +92,30 @@ per-invocation by default, with opt-in rules the user writes, never rules the mo
 untrusted surface. Model output that achieves script execution there can invoke any command
 the frontend is allowed to invoke, and the core cannot tell a scripted call from a click — so
 a bare `approve(tool_call_id)` command would let a model approve its own shell command. The
-core must require something the WebView cannot forge before it executes an approved call.
-Which mechanism supplies that is open (issue #21); no design that takes the frontend's word
-for it is acceptable. Because every signal that originates in the WebView is forgeable by
-the same script, the unforgeable factor has to come from outside it — a core-owned native
-dialog, or a secret the rendering context cannot read — never a token the frontend also
-holds.
+rule, decided under "Consent is a native dialog the core owns" in `decisions.md` (#21):
+
+- **The core executes an approved request only against a consent token, and only the
+  consent gate mints one.** The gate asks a presenter the core defines and the shell
+  implements — on macOS a native modal opened from Rust and answered in Rust. The answer
+  never transits IPC; no application command takes an approval decision as an argument, and
+  the WebView holds no dialog permission. The WebView displays a pending request; it cannot
+  answer it.
+- **The token is bound to the request the core built**, not to a call id the model supplied:
+  a core-issued invocation id, the run, the workspace root, resolved paths, and for a write
+  the hash of the content to be written and of the file to be replaced. Single use, memory
+  only, void when the run ends, the request is cancelled, or a precondition changes. Two runs
+  sharing a workspace therefore cannot make the content approved and the content written
+  differ — the mismatch is a new request.
+- **The dialog shows the whole of what will run**, byte-exact, never summarised; a request the
+  presenter cannot show in full is refused, not approved on a hash. Shell commands and
+  settings writes fit a modal; a diff does not, so a core-owned presenter that renders one
+  blocks #17.
+- **Consent is not authorization.** The refused tier (#33) is rejected before any dialog
+  opens; auto-run is policy, not consent; the affirmative is never the default button;
+  nothing is approved by timeout; if the presenter fails, nothing executes.
+- **Scope.** This guarantees that consent cannot be forged from the WebView. A process that
+  can synthesise OS input is outside it. On a CLI backend the dialog answers only the
+  requests the CLI delegates to the core; which those are is the table under #40.
 
 **The rule covers anything that decides an approval was unnecessary — and enumerating those
 is how one gets missed.** Gating the `approve` call alone is not enough: a forged message that
