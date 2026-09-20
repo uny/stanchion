@@ -753,7 +753,7 @@ can open a run of its own and ask under it — a dialog labelled with a backend 
 chose — and, since run ids are the gate's own counter, name a backend's run through one
 registered on a second gate. The session surface does not hand any of that out, but the
 gate does; narrowing it to the crate means moving those tests in-crate, and is a follow-up
-rather than this entry.
+rather than this entry (#54).
 
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that

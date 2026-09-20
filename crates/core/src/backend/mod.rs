@@ -23,7 +23,7 @@
 //! held by the [`Attachment`] lease, which only this crate constructs. What this does
 //! *not* close: [`Consent::register_run`] and [`Consent::ask`] are `pub` for the
 //! integration tests, so a holder of the gate can still open a run of its own and ask
-//! under it. Narrowing them to the crate is a follow-up that moves those tests in-crate.
+//! under it. Narrowing them to the crate is #54, which moves those tests in-crate.
 //!
 //! **A runtime.** Events reach the caller through an [`EventSink`] it supplies, on whatever
 //! thread the backend delivers from, as the presenter does for consent. Whether a backend

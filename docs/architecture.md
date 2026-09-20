@@ -89,7 +89,7 @@ ships, not a plugin surface. Seven items, each a type:
    `src/lib.rs` shows the missing method's shape in a `compile_fail` doctest beside the
    token ones, and the lease's constructor is crate-private. Not closed by this: the gate's
    `register_run` and `ask` are `pub` for the integration tests, so a holder of the gate
-   can open a run of its own and ask under it — narrowing them to the crate is a follow-up.
+   can open a run of its own and ask under it — narrowing them to the crate is #54.
    The resolution is the gate's, as "An IPC message is not consent" already
    requires — a `resolve(decision)` on the backend trait would be `approve(tool_call_id)`
    under another name.
