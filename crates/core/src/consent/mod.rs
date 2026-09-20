@@ -82,8 +82,9 @@ pub struct Consent {
     /// its turn, and is woken when the slot frees or when it is withdrawn.
     slot: Mutex<bool>,
     slot_changed: Condvar,
-    /// One lock per canonical write target, held across verifying a write's precondition
-    /// and performing the write. Serialises the core's own writers, and only those.
+    /// One lock per canonical target directory, held across verifying a write's
+    /// precondition and performing the write. Serialises the core's own writers, and only
+    /// those.
     write_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
 }
 
@@ -335,7 +336,7 @@ impl Consent {
     }
 
     /// Performs an approved write: verifies the precondition and writes, as one operation
-    /// under the target's write lock. What this guarantees is that the core's write
+    /// under the target directory's write lock. What this guarantees is that the core's write
     /// lands on what was verified unless a process outside the core changed it inside the
     /// window; a check followed by a write would not guarantee even that.
     pub(crate) fn write(&self, approved: &Approved) -> Result<(), Refusal> {
@@ -349,15 +350,13 @@ impl Consent {
         else {
             return Err(Refusal::WrongDoor);
         };
-        // Keyed by the canonical target, so two requests naming one file — under two
-        // roots, or one root spelled two ways — contend for the same lock.
-        let key = match path.file_name() {
-            Some(name) => parent.join(name),
-            None => return Err(Refusal::Unresolvable("path has no file name".into())),
-        };
+        // Keyed by the canonical directory, so two requests naming one file — under two
+        // roots, one root spelled two ways, or a name in two cases on a case-insensitive
+        // filesystem — contend for the same lock. The directory exists, so its canonical
+        // form is one spelling; a name that does not yet exist has none.
         let lock = {
             let mut locks = self.write_locks.lock().unwrap_or_else(|e| e.into_inner());
-            locks.entry(key).or_default().clone()
+            locks.entry(parent.clone()).or_default().clone()
         };
         let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
         // A target that can no longer be snapshotted — a symlink or a directory where a
@@ -399,16 +398,17 @@ impl Consent {
             },
             ClassSpec::FileWrite { path, content } => {
                 let path = resolve_against(&spec.workspace_root, path);
-                let (parent, prior) = snapshot(&path)?;
                 // The workspace root is the boundary for filesystem tools
                 // (`docs/architecture.md`); compared on canonical paths, so neither `..`
-                // nor a symlink out of the tree crosses it.
+                // nor a symlink out of the tree crosses it. Checked before the target is
+                // read, so a path outside the root is refused, not inspected.
                 let root = spec.workspace_root.canonicalize().map_err(|e| {
                     Refusal::Unresolvable(format!("{}: {e}", spec.workspace_root.display()))
                 })?;
-                if !parent.starts_with(&root) {
+                if !canonical_parent(&path)?.starts_with(&root) {
                     return Err(Refusal::OutsideWorkspace(path));
                 }
+                let (parent, prior) = snapshot(&path)?;
                 let content: Arc<[u8]> = content.into();
                 let content_hash = Sha256Digest::of(&content);
                 Class::FileWrite {
@@ -488,12 +488,7 @@ fn withdraw_locked(s: &mut State, invocation: InvocationId) -> Option<Handle> {
 /// so a symlink where a file was is a change, not a file; and a file with a second hard
 /// link is not a regular file either, since writing it writes the other name too.
 fn snapshot(path: &Path) -> Result<(PathBuf, Prior), Refusal> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| Refusal::Unresolvable("path has no parent".into()))?;
-    let parent = parent
-        .canonicalize()
-        .map_err(|e| Refusal::Unresolvable(format!("{}: {e}", parent.display())))?;
+    let parent = canonical_parent(path)?;
     let prior = match std::fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Prior::Absent,
         Err(e) => return Err(Refusal::Unresolvable(format!("{}: {e}", path.display()))),
@@ -510,6 +505,15 @@ fn snapshot(path: &Path) -> Result<(PathBuf, Prior), Refusal> {
         }
     };
     Ok((parent, prior))
+}
+
+fn canonical_parent(path: &Path) -> Result<PathBuf, Refusal> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| Refusal::Unresolvable("path has no parent".into()))?;
+    parent
+        .canonicalize()
+        .map_err(|e| Refusal::Unresolvable(format!("{}: {e}", parent.display())))
 }
 
 /// A relative path is relative to the workspace root, never to the process's directory.
@@ -634,7 +638,19 @@ pub fn render(request: &Request) -> Rendered {
 /// it is. Shown beside the raw bytes, never instead of them. A backslash ends the authority
 /// as a slash does, which is how WHATWG clients read `https://evil.example\@api.example.com/`.
 fn host_of(url: &str) -> String {
-    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    // A scheme, then any run of slashes in either direction: `https:\\host` is how a WHATWG
+    // client reads a URL written with backslashes.
+    let after_scheme = match url.split_once(':') {
+        Some((scheme, rest))
+            if scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+                && scheme.starts_with(|c: char| c.is_ascii_alphabetic()) =>
+        {
+            rest.trim_start_matches(['/', '\\'])
+        }
+        _ => url,
+    };
     let authority = after_scheme
         .split(['/', '\\', '?', '#'])
         .next()

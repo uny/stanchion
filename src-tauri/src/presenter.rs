@@ -55,22 +55,28 @@ impl ConsentPresenter for FailClosed {
 mod tests {
     use super::*;
 
-    /// Every capability file, not only the default one: Tauri loads the whole directory,
-    /// so a permission added in a second file widens the WebView exactly as one here would.
+    /// Every capability file, not only the default one: `tauri-build` loads
+    /// `capabilities/**/*`, so a permission added in a second file, at any depth, widens
+    /// the WebView exactly as one here would.
     fn capabilities() -> Vec<(String, String)> {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities");
-        let mut files: Vec<_> = std::fs::read_dir(dir)
-            .expect("capabilities/ exists")
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "json" || x == "toml"))
-            .map(|p| {
-                (
-                    p.display().to_string(),
-                    std::fs::read_to_string(&p).unwrap(),
-                )
-            })
-            .collect();
+        fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            for entry in std::fs::read_dir(dir).expect("capabilities/ exists") {
+                let path = entry.expect("readable entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|x| x == "json" || x == "toml") {
+                    out.push((
+                        path.display().to_string(),
+                        std::fs::read_to_string(&path).unwrap(),
+                    ));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities")),
+            &mut files,
+        );
         files.sort();
         assert!(!files.is_empty(), "no capability files");
         files

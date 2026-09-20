@@ -657,11 +657,14 @@ fn concurrent_writes_to_one_target_are_serialised_and_the_second_is_refused() {
     let token_1 = gate
         .ask(write_spec(run, ws.path(), "shared", b"from-1"))
         .unwrap();
+    // On a case-insensitive filesystem the second name is the same file; on a
+    // case-sensitive one it is a new file in the same directory, and both writes land.
+    let case_insensitive = ws.path().join("SHARED").exists();
     let token_2 = gate
         .ask(write_spec(
             run,
             &ws.path().join("sub").join(".."),
-            "shared",
+            if case_insensitive { "SHARED" } else { "shared" },
             b"from-2",
         ))
         .unwrap();
@@ -995,14 +998,19 @@ fn a_labelled_value_cannot_forge_a_line_and_a_url_shows_the_host_a_client_would_
             },
         },
     });
-    let _ = gate.ask(RequestSpec {
-        run: None,
-        workspace_root: ws.path().to_path_buf(),
-        class: ClassSpec::GatewayUrl {
-            old: None,
-            new: "https://evil.example\\@api.example.com/".into(),
-        },
-    });
+    for url in [
+        "https://evil.example\\@api.example.com/",
+        "https:\\\\evil.example\\@api.example.com/",
+    ] {
+        let _ = gate.ask(RequestSpec {
+            run: None,
+            workspace_root: ws.path().to_path_buf(),
+            class: ClassSpec::GatewayUrl {
+                old: None,
+                new: url.into(),
+            },
+        });
+    }
     let shown = presenter.shown();
     let lines: Vec<&str> = shown[0].body.lines().collect();
     assert_eq!(
@@ -1015,11 +1023,14 @@ fn a_labelled_value_cannot_forge_a_line_and_a_url_shows_the_host_a_client_would_
         ],
         "a newline in a labelled value must not start a line of its own"
     );
-    assert_eq!(
-        shown[1].parsed,
-        vec![("new host".to_string(), "evil.example".to_string())],
-        "a backslash ends the authority as WHATWG parsers read it"
-    );
+    for r in &shown[1..] {
+        assert_eq!(
+            r.parsed,
+            vec![("new host".to_string(), "evil.example".to_string())],
+            "a backslash ends the authority as WHATWG parsers read it: {}",
+            r.body
+        );
+    }
 }
 
 #[test]
@@ -1058,6 +1069,16 @@ fn a_write_outside_the_workspace_or_through_a_second_name_is_refused_before_any_
         gate.ask(write_spec(run, ws.path(), "twin", b"x")),
         Err(Refusal::Unresolvable(_))
     ));
+
+    // Refused before the target is looked at: an outside path that is not a regular file
+    // is reported as outside, not as whatever it is.
+    std::fs::create_dir(outside.path().join("dir")).unwrap();
+    assert!(refused(gate.ask(write_spec(
+        run,
+        ws.path(),
+        outside.path().join("dir").to_str().unwrap(),
+        b"x"
+    ))));
 
     assert!(presenter.shown().is_empty());
     assert!(!outside.path().join("escaped").exists());

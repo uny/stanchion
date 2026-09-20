@@ -535,9 +535,9 @@ shared-workspace race that the concurrency entry left open for #21 and #16, on t
 backend: the approval snapshots what was diffed, and a write that no longer matches the
 snapshot is a new request. The check is only as good as its distance from the write, so
 verifying the precondition and performing the write are one operation — a write lock on
-the resolved target held across both — not a check followed by a write; a verify-then-rename
-is a check followed by a write with the window moved, since rename replaces whatever is at the
-path when it runs. The lock serialises the core's own writers, and only those: a shell
+the target's resolved directory held across both — not a check followed by a write; a
+verify-then-rename is a check followed by a write with the window moved, since rename
+replaces whatever is at the path when it runs. The lock serialises the core's own writers, and only those: a shell
 command the core spawned on the native backend writes to the workspace without taking it, so
 what the snapshot guarantees is that the core's write lands on what was verified unless a
 process outside the core changed it inside the window — narrower than "two runs cannot
