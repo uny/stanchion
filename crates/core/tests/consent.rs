@@ -657,8 +657,8 @@ fn concurrent_writes_to_one_target_are_serialised_and_the_second_is_refused() {
     let token_1 = gate
         .ask(write_spec(run, ws.path(), "shared", b"from-1"))
         .unwrap();
-    // On a case-insensitive filesystem the second name is the same file; on a
-    // case-sensitive one it is a new file in the same directory, and both writes land.
+    // On a case-insensitive filesystem the second token names the same file in the other
+    // case, which the lock must still treat as one target; elsewhere it names it as is.
     let case_insensitive = ws.path().join("SHARED").exists();
     let token_2 = gate
         .ask(write_spec(

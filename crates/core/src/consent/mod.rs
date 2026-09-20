@@ -361,10 +361,12 @@ impl Consent {
         let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
         // A target that can no longer be snapshotted — a symlink or a directory where a
         // file was — is a changed precondition, not a resolution failure.
-        let (now_parent, now_prior) = snapshot(path).map_err(|e| match e {
+        let changed = |e| match e {
             Refusal::Unresolvable(what) => Refusal::PreconditionChanged(what),
             other => other,
-        })?;
+        };
+        let now_parent = canonical_parent(path).map_err(changed)?;
+        let now_prior = snapshot(path).map_err(changed)?;
         if &now_parent != parent {
             return Err(Refusal::PreconditionChanged(
                 "path now resolves elsewhere".into(),
@@ -405,10 +407,13 @@ impl Consent {
                 let root = spec.workspace_root.canonicalize().map_err(|e| {
                     Refusal::Unresolvable(format!("{}: {e}", spec.workspace_root.display()))
                 })?;
-                if !canonical_parent(&path)?.starts_with(&root) {
+                // One resolution serves both the check and the binding: a directory that
+                // is checked and then resolved again could be swapped in between.
+                let parent = canonical_parent(&path)?;
+                if !parent.starts_with(&root) {
                     return Err(Refusal::OutsideWorkspace(path));
                 }
-                let (parent, prior) = snapshot(&path)?;
+                let prior = snapshot(&path)?;
                 let content: Arc<[u8]> = content.into();
                 let content_hash = Sha256Digest::of(&content);
                 Class::FileWrite {
@@ -484,11 +489,10 @@ fn withdraw_locked(s: &mut State, invocation: InvocationId) -> Option<Handle> {
     p.handle
 }
 
-/// The canonical parent directory and the state of the target itself. `symlink_metadata`,
-/// so a symlink where a file was is a change, not a file; and a file with a second hard
-/// link is not a regular file either, since writing it writes the other name too.
-fn snapshot(path: &Path) -> Result<(PathBuf, Prior), Refusal> {
-    let parent = canonical_parent(path)?;
+/// The state of the target itself. `symlink_metadata`, so a symlink where a file was is a
+/// change, not a file; and a file with a second hard link is not a regular file either,
+/// since writing it writes the other name too.
+fn snapshot(path: &Path) -> Result<Prior, Refusal> {
     let prior = match std::fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Prior::Absent,
         Err(e) => return Err(Refusal::Unresolvable(format!("{}: {e}", path.display()))),
@@ -504,9 +508,10 @@ fn snapshot(path: &Path) -> Result<(PathBuf, Prior), Refusal> {
             )))
         }
     };
-    Ok((parent, prior))
+    Ok(prior)
 }
 
+/// The canonical form of the directory a path names, which is what a write is bound to.
 fn canonical_parent(path: &Path) -> Result<PathBuf, Refusal> {
     let parent = path
         .parent()
@@ -638,8 +643,9 @@ pub fn render(request: &Request) -> Rendered {
 /// it is. Shown beside the raw bytes, never instead of them. A backslash ends the authority
 /// as a slash does, which is how WHATWG clients read `https://evil.example\@api.example.com/`.
 fn host_of(url: &str) -> String {
-    // A scheme, then any run of slashes in either direction: `https:\\host` is how a WHATWG
-    // client reads a URL written with backslashes.
+    // WHATWG: a special scheme (http, https, ws, wss, ftp) skips any run of slashes in
+    // either direction before its authority, so `https:\\host` names `host`; any other
+    // scheme has an authority only after exactly `//`; no scheme, no host.
     let after_scheme = match url.split_once(':') {
         Some((scheme, rest))
             if scheme
@@ -647,9 +653,19 @@ fn host_of(url: &str) -> String {
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
                 && scheme.starts_with(|c: char| c.is_ascii_alphabetic()) =>
         {
-            rest.trim_start_matches(['/', '\\'])
+            let special = matches!(
+                scheme.to_ascii_lowercase().as_str(),
+                "http" | "https" | "ws" | "wss" | "ftp"
+            );
+            if special {
+                rest.trim_start_matches(['/', '\\'])
+            } else if let Some(authority) = rest.strip_prefix("//") {
+                authority
+            } else {
+                return String::new();
+            }
         }
-        _ => url,
+        _ => return String::new(),
     };
     let authority = after_scheme
         .split(['/', '\\', '?', '#'])
