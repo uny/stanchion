@@ -205,10 +205,16 @@ mod lease {
         /// calls it too.
         pub(crate) fn end(&self) -> RunEnded {
             // `Once`, not a flag: a second caller blocks until the first has ended the run,
-            // so no proof is returned while the run is still live. `_force` so that a panic
-            // in the presenter's `dismiss` does not turn every later `Drop` into another —
-            // `end_run` is idempotent, so running it again is harmless.
-            self.ended.call_once_force(|_| self.gate.end_run(self.run));
+            // so no proof is returned while the run is still live — at the cost that it
+            // waits across the presenter's `dismiss`, which `end_run` calls last. `_force`
+            // so that a panic in that `dismiss` does not turn every later `Drop` into
+            // another; the run is already out of the gate's state by then, so the poisoned
+            // path does nothing rather than dismissing the same handle twice.
+            self.ended.call_once_force(|state| {
+                if !state.is_poisoned() {
+                    self.gate.end_run(self.run);
+                }
+            });
             RunEnded {
                 attachment: self.id,
             }
