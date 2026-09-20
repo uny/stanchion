@@ -749,7 +749,8 @@ as silent and fail-open, can be made to surface as `RanWithoutAsking` at all, or
 `--debug` log the core tails, is the same slice's to measure.
 
 **Rules out:** any method on a backend or a session that takes an approval decision; a
-session id stored without the account it was created under, or a resume that names one; a
+session id stored without the account and workspace it was created under, or a resume that
+names either; a
 capability read on the approval path; a backend that reports usage as zero when it has not
 reported it; a cost figure shown as a subscription's bill; a helper path or MCP
 configuration read from a settings file the model can reach; a second relay for the bridge.

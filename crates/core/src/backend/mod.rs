@@ -25,11 +25,6 @@
 //! drives its subprocess from a thread or an executor is that backend's business, decided
 //! when it is written.
 
-// The crate-private half of the surface — `SessionId::new`, the lease's constructor and
-// accessors — is what a backend uses, and the first backend is #46. Until it lands, the
-// tests are the only caller.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -78,6 +73,9 @@ pub struct SessionId {
 }
 
 impl SessionId {
+    // Called by a backend, and the first backend is #46; until it lands, only tests call
+    // this. The allow goes with the first caller.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(
         backend: Backend,
         account: AccountId,
@@ -129,7 +127,12 @@ pub struct TurnId(u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AttachmentId(u64);
 
+// Process-wide counters for identity only — never configuration, which the run-is-a-value
+// entry keeps out of process-wide state. The consent gate numbers its runs per gate; these
+// number turns and attachments per process, so the scopes differ and neither reads the other.
+#[cfg_attr(not(test), allow(dead_code))]
 static NEXT_TURN: AtomicU64 = AtomicU64::new(1);
+#[cfg_attr(not(test), allow(dead_code))]
 static NEXT_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
 
 /// The lease a backend holds on the consent gate for one attachment. Registers the consent
@@ -144,6 +147,8 @@ pub struct Attachment {
     ended: AtomicBool,
 }
 
+// As for `SessionId::new`: the callers are the backends, the first of which is #46.
+#[cfg_attr(not(test), allow(dead_code))]
 impl Attachment {
     pub(crate) fn open(gate: Arc<Consent>, backend: Backend) -> Self {
         Attachment {

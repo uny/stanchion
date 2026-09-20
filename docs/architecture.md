@@ -105,7 +105,7 @@ ships, not a plugin surface. Seven items, each a type:
 | lifetime | id | owner | ends when |
 |:--|:--|:--|:--|
 | the GUI conversation | `ConversationId` | core | the user closes it; outlives everything below |
-| the backend session | `SessionId` | backend's value, stored with its account by the core | the backend forgets it; a resume reattaches to it |
+| the backend session | `SessionId` | backend's value, stored with its account and workspace root by the core | the backend forgets it; a resume reattaches to it |
 | one turn | `TurnId` | core | the model stops, is interrupted, or the attachment under it ends (`Cut`) |
 | one attachment | `AttachmentId` | core | the process exits or the loop instance ends; each resume is a new one |
 

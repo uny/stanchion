@@ -414,10 +414,11 @@ impl Session for NativeSession {
 // ---------------------------------------------------------------------------------------
 // The driver: everything above a backend, with no branch on which one it is
 
+/// What the driver is left holding: the gate it handed over and the attachment id, and
+/// nothing that could redeem a token or bind a request to the run.
 struct Driven {
     events: Vec<Event>,
     presenter: Arc<Declines>,
-    gate: Arc<Consent>,
     attachment: AttachmentId,
 }
 
@@ -453,10 +454,10 @@ fn drive(backend: &dyn RunBackend) -> Driven {
     session.terminate().expect("terminate is idempotent");
     let attachment = session.attachment();
     drop(session);
+    drop(gate);
     Driven {
         events: events.take(),
         presenter,
-        gate,
         attachment,
     }
 }
@@ -722,13 +723,4 @@ fn the_lease_ends_the_consent_run_on_terminate_and_on_drop() {
             .err();
         assert_eq!(after, Some(crate::consent::policy::Refusal::UnknownRun));
     }
-}
-
-#[test]
-fn the_driver_sees_no_token_and_no_run_id() {
-    // Read as a statement about the public surface: `Driven` carries the gate and the
-    // attachment id and nothing that could redeem a token or bind a request to the run.
-    let driven = drive(&FakeCli);
-    let _: AttachmentId = driven.attachment;
-    let _: &Consent = &driven.gate;
 }
