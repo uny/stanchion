@@ -663,3 +663,101 @@ line count standing in for the content being approved (a labelled addition besid
 is not a substitute for them); an affirmative default button; approving on timeout;
 execution on presenter failure; a token honoured in a run or a workspace other than the one
 it was minted in, that survives a restart, or that is minted by anything but the gate.
+
+## The run backend contract, and the helper that carries a CLI's approval requests
+
+The Run-backends entry above settled that there are two backends and that they are the same
+kind of value to everything above them; #39 asked for the contract that makes that so. This
+entry fixes it — the trait in `crates/core/src/backend`, the four lifetimes in
+`architecture.md` — and decides how a CLI's approval requests reach the gate, since the
+Claude Code slice (#46) cannot be cut without that.
+
+**The contract is seven types, and the one thing it does not carry is an approval.** A
+backend receives the consent gate at `start` and asks it itself; nothing on the session
+trait takes an answer or hands out the consent run id, so the code above — the shell, and
+the WebView behind it — has nothing on a session by which to approve, and nothing by which
+to ask the gate under the backend's run. This is the consent entry's rule seen
+from the other side: a `resolve(decision)` on the backend trait would be
+`approve(tool_call_id)` under another name, and the fact that it is the *shell* calling it
+rather than the WebView is no defence, since the shell's commands are what the WebView
+invokes. The traits are sealed, so the two backends this crate ships are the only two;
+"built in and static" is a compile error, not a convention. Capabilities are what a backend can
+promise, stated from measurement — which approvals reach the gate, what a resumed session
+does with a cut turn after an interrupt and, separately, after a crash (#42 measured that
+Claude Code asks before continuing after the first and may re-run the cut call after the
+second, and the type says so rather than rounding both to one word) — and the code above may
+read them to offer or withhold an affordance and may not read them to change how an approval
+is handled. Otherwise capabilities become the branch #39 forbids.
+
+**The consent run is the attachment, and a lease is what ends it.** Four lifetimes were
+named in #39 — conversation, session, turn, process — and the one that had to be pinned to
+something existing is which of them the gate's `RunId` is, since tokens die with it. It is
+the attachment: one supervised process on a CLI backend, one loop instance on the native
+one. A backend holds it as an `Attachment` lease that registers the run when opened and ends
+it when dropped, so the run ends on `terminate`, on a crash, and when the session is dropped
+without either — "the backend remembered to call `end_run`" is not a path that exists. A
+token minted under a process that crashed is void before the resumed process exists, and a
+dialog pending from it is withdrawn rather than answered into the wrong process; a resume
+registers a new run. The cost is that a conversation's approval record spans several
+consent runs, which the record keys on. The session id, for its part, carries the account
+*and the workspace root* it was created under, and a resume takes the id and nothing else
+that names either: a CLI keys its transcripts by config directory and then by workspace
+(#42), so a session reattached under another root is at best not found. The alternative — the session as the run — would carry a pending token across a
+crash into a process that never saw the request, which is exactly the "last approved,
+unconfirmed command" row #40 already has to carry for the CLI's own resume behaviour, and
+the core should not add a second instance of it.
+
+**Approval requests reach the gate through a helper the core ships, over a socket the core
+owns.** Claude Code delivers the requests it delegates by calling a tool on an MCP server
+named in `--permission-prompt-tool`; Codex delivers them on its app-server connection, which
+the core already holds. So the question is Claude Code's, and it is where the core's end of
+that MCP server lives. Chosen: a small stdio helper binary the core ships beside itself,
+which the CLI spawns as it spawns any stdio MCP server, and which relays to the core over a
+Unix domain socket in a directory the core created with mode 0700, one socket per
+attachment, unlinked at exit. The alternative — the core listening on a localhost HTTP port
+with a per-run bearer in the MCP configuration — needs no helper, but a port is visible to
+every process on the host and the bearer sits in a file, so the surface for a forged request
+is "anything that can read that file" rather than "anything that can open that socket",
+and the socket's answer is filesystem permission, which is the same answer the config
+directory already relies on. The bridge MCP server (#44) is the same helper with more tools;
+one relay, not two. **Rejected:** the localhost port, for the reason above, and a helper
+that is itself the MCP server with state of its own — the helper relays bytes and holds no
+policy, so that the thing the CLI talks to and the thing the user's dialog answers are one
+gate.
+
+**What the helper is under the class rule.** The helper is a program the core runs, and the
+MCP configuration that names it is a settings write in shape. It is not one in substance:
+the core generates that configuration into the per-account config directory it owns (#41)
+from a path it resolves at startup — the application bundle's, never a value read from any
+settings file — so no consent is asked to write it and no model output can reach what it
+names. A settings entry that named a *different* helper would be an MCP server entry like
+any other, and asks the gate. The helper's own trust is the socket directory's mode plus
+the fact that it carries no policy; a forged request through it opens a dialog the user
+declines, and a forged *reply* is impossible because the reply is the core's to send, on
+the socket, to a request the core numbered.
+
+**Still open, and where it closes.** The gate today returns a token or a refusal and issues
+the invocation id inside; a backend that asks it learns the id only if it is allowed. For
+`ApprovalRequested` to name the pending request before the answer, the gate has to surface
+the rendered request to the asker at the moment it presents — an observer the asker passes,
+not a second channel — and that lands with the first backend that emits the event (the
+Claude Code approval slice), not here. The runtime a backend drives its process from is
+likewise not decided here: the contract delivers events through a sink the caller supplies,
+as the presenter does, and a threaded and an executor-driven implementation both fit; the
+Claude Code slice decides for itself and says why. Whether hook failure, which #42 measured
+as silent and fail-open, can be made to surface as `RanWithoutAsking` at all, or only as a
+`--debug` log the core tails, is the same slice's to measure. And the gate's own surface is
+wider than the session's: `Consent::register_run` and `Consent::ask` are `pub` because the
+integration tests in `crates/core/tests` drive the gate directly, so a holder of the gate
+can open a run of its own and ask under it — a dialog labelled with a backend the shell
+chose — and, since run ids are the gate's own counter, name a backend's run through one
+registered on a second gate. The session surface does not hand any of that out, but the
+gate does; narrowing it to the crate means moving those tests in-crate, and is a follow-up
+rather than this entry (#54).
+
+**Rules out:** any method on a backend or a session that takes an approval decision; a
+session id stored without the account and workspace it was created under, or a resume that
+names either; a
+capability read on the approval path; a backend that reports usage as zero when it has not
+reported it; a cost figure shown as a subscription's bill; a helper path or MCP
+configuration read from a settings file the model can reach; a second relay for the bridge.

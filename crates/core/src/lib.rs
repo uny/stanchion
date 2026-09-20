@@ -101,7 +101,48 @@
 //!
 //! It is not serialisable either, which no fixture can show directly: this crate depends on
 //! no serialisation library, and `cargo tree` in CI is what keeps that so.
+//!
+//! The run backend contract (`backend`) keeps the same rule from the other side: the code
+//! above a backend holds a session and has nothing on it by which to answer an approval —
+//! the backend asks the gate itself, and an answer has no method to arrive through:
+//!
+//! ```compile_fail,E0599
+//! use stanchion_core::{backend::Session, consent::{presenter::Answer, request::InvocationId}};
+//! fn go(session: &dyn Session, invocation: InvocationId) {
+//!     session.resolve(invocation, Answer::Allow);
+//! }
+//! ```
+//!
+//! And the backends are the ones this crate ships: the traits are sealed, so nothing
+//! outside can implement one and hand the code above a backend of its own:
+//!
+//! ```compile_fail,E0277
+//! use stanchion_core::backend::{Backend, BackendError, Capabilities, Resume, RunBackend, Session, Start};
+//! struct Mine;
+//! impl RunBackend for Mine {
+//!     fn kind(&self) -> Backend { Backend::Native }
+//!     fn capabilities(&self) -> Capabilities { todo!() }
+//!     fn start(&self, _: Start) -> Result<Box<dyn Session>, BackendError> { todo!() }
+//!     fn resume(&self, _: Resume) -> Result<Box<dyn Session>, BackendError> { todo!() }
+//! }
+//! ```
+//!
+//! Nor a session of its own, which is what would let it skip the lease:
+//!
+//! ```compile_fail,E0277
+//! use stanchion_core::backend::{AttachmentId, BackendError, InboxMessage, Session, TurnId, Usage, UserInput};
+//! struct Mine;
+//! impl Session for Mine {
+//!     fn attachment(&self) -> AttachmentId { todo!() }
+//!     fn send(&self, _: UserInput) -> Result<TurnId, BackendError> { todo!() }
+//!     fn deliver(&self, _: InboxMessage) -> Result<(), BackendError> { todo!() }
+//!     fn interrupt(&self) -> Result<(), BackendError> { todo!() }
+//!     fn terminate(&self) -> Result<(), BackendError> { todo!() }
+//!     fn usage(&self) -> Usage { todo!() }
+//! }
+//! ```
 
+pub mod backend;
 pub mod consent;
 pub mod execute;
 

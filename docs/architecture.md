@@ -46,9 +46,80 @@ A run is driven by one of two backends, chosen per run and carried in the run va
   its own loop, tools and credential.
 
 Everything above the backend is shared: the run list, the account (#45), the event stream,
-the inbox (#43), the approval record, process supervision. The contract a backend implements
-is #39. The approval and credential rules in this file and in `auth.md` are stated for the
-native backend; what a CLI backend enforces, delegates or leaves open is tabulated under #40.
+the inbox (#43), the approval record, process supervision. The approval and credential rules
+in this file and in `auth.md` are stated for the native backend; what a CLI backend
+enforces, delegates or leaves open is tabulated under #40.
+
+**The contract** is `crates/core/src/backend`, decided under "The run backend contract" in
+`decisions.md` (#39). The code above a backend holds a `RunBackend` and a `Session` as trait
+objects and never branches on which backend it has; the module's tests drive two independent
+fakes — one shaped like a CLI, one like the native loop, sharing no code — through one
+function to keep that true. The traits are sealed: the backends are the ones this crate
+ships, not a plugin surface. Seven items, each a type:
+
+1. **Capabilities** — `resume`, `mid_turn_input`, which approvals reach the gate (`Every`
+   on native, `Delegated` on a CLI, where "which" is #40's table), and what a resumed
+   session was *observed* to do with a cut turn, separately after `interrupt` and after a
+   crash, on the backend version the capability names (#42). The code above reads
+   capabilities to offer or withhold an affordance — a resume button, a mid-turn input
+   box, a "delegated" badge — and never to alter the approval path, which is the same for
+   every backend. `kind()` is there for the same reason: the dialog title and the run list
+   name the backend, which #40 requires; it is shown, not branched on.
+2. **`start` / `resume`** — `resume` takes a `SessionId`, which carries the backend's own
+   identifier as the core stored it *and* the account and workspace it was created under,
+   and takes nothing else that names either. A stored session cannot be reattached under a
+   different account or root because there is nowhere at the call site to say so; only a
+   backend constructs a `SessionId`, from what the backend reported. Never "the latest".
+3. **Events** — one sink the caller supplies. `MessagePartial` and `MessageComplete` are
+   distinct kinds: a UI that renders a partial as the message shows text the model may
+   still retract. A tool call, its approval and its result share the backend's call id, so
+   they correlate when several interleave. `ApprovalRequested` carries what the dialog
+   shows so the WebView can display the same bytes (no backend emits it yet: the gate
+   surfaces the request to its asker only on the answer, which the decision entry lists as
+   open); `RanWithoutAsking` reports a call the
+   backend executed that never reached the gate, recorded under #40 rather than silently
+   accepted; `Diagnostic` carries what the backend said outside the conversation — an init
+   record, stderr — for a log. `SessionOpened` arrives once per attachment, as soon as the
+   backend knows its id, which on a CLI may be after the first input.
+4. **Approval** — not a method, and not reachable. A backend receives the consent gate at
+   `start`, wraps it in an `Attachment` lease that registers the consent run, and asks the
+   gate itself (on a CLI backend through `CliApproval::resolve`, which owes the CLI exactly
+   one reply). Nothing on `Session` takes an answer or exposes the run id, so the code above
+   has nothing on a session by which to answer, or to ask under the backend's run;
+   `src/lib.rs` shows the missing method's shape in a `compile_fail` doctest beside the
+   token ones, and the lease's constructor is crate-private. Not closed by this: the gate's
+   `register_run` and `ask` are `pub` for the integration tests, so a holder of the gate
+   can open a run of its own and ask under it — narrowing them to the crate is #54.
+   The resolution is the gate's, as "An IPC message is not consent" already
+   requires — a `resolve(decision)` on the backend trait would be `approve(tool_call_id)`
+   under another name.
+5. **`deliver`** — an inbox message (#43) enters the backend, and *enqueued*, *accepted*
+   (written to the backend's input) and *injected* (confirmed in context) are three
+   reported states, not one. A backend that cannot observe the third never reports it.
+6. **`interrupt` / `terminate`** — with the cut-turn behaviour stated in capabilities per
+   cause, since Claude Code asks before continuing after its own interrupt and may re-run
+   the cut call after a crash (#42). `terminate` is idempotent and takes `&self`; the end
+   is observed as `Exited`, and the consent run ends with the lease — on terminate, on a
+   crash, or when the session is dropped.
+7. **Usage** — `NotReported` is a variant, distinct from zero; cost is an `EstimatedUsd`
+   in integer millionths, the backend's estimate, and the UI labels it as such and never as
+   what a subscription will bill. Per turn in the event, cumulative from the session.
+
+**Four lifetimes, four id types, never conflated:**
+
+| lifetime | id | owner | ends when |
+|:--|:--|:--|:--|
+| the GUI conversation | `ConversationId` | core | the user closes it; outlives everything below |
+| the backend session | `SessionId` | backend's value, stored with its account and workspace root by the core | the backend forgets it; a resume reattaches to it |
+| one turn | `TurnId` | core | the model stops, is interrupted, or the attachment under it ends (`Cut`) |
+| one attachment | `AttachmentId` | core | the process exits or the loop instance ends; each resume is a new one |
+
+The consent gate's `RunId` is the **attachment**: the `Attachment` lease registers one when
+opened and ends it when dropped, so a token minted under a process that crashed is void
+before the resumed process exists, and a pending dialog from it is withdrawn rather than
+answered into the wrong process. A conversation therefore sees several consent runs over its
+life, one per attachment, and the approval record keys on that. Turn ids come from one
+counter for the process, so a turn is unique across attachments, not merely within one.
 
 ## The agent loop
 
