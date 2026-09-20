@@ -66,8 +66,10 @@ jobs:
             exit 1
           fi
 
-      # Runs zero tests today. It is here so the first test added actually executes:
-      # --all-targets above compiles test targets but never runs them.
+      # --all-targets above compiles test targets but never runs them. This runs the
+      # consent gate's runtime suite (crates/core/tests/consent.rs), the `compile_fail`
+      # doctests in crates/core/src/lib.rs that pin the token's type-level guarantees, and
+      # the shell's capability and button-order checks (src-tauri/src/presenter.rs).
       - name: Test the workspace
         run: cargo test --locked --workspace
 

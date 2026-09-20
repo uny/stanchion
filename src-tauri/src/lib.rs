@@ -7,6 +7,11 @@
 //! Commands belong here; the work they delegate to belongs in `stanchion_core`, which does
 //! not depend on Tauri. A command that grows logic of its own has put interface code on the
 //! trusted side of the boundary.
+//!
+//! One thing the WebView cannot reach at all is an approval: `presenter` is the shell's
+//! half of the consent gate, and its answer never transits IPC.
+
+pub mod presenter;
 
 /// Reports the core's version. The skeleton's only command; it exists to prove the IPC
 /// boundary is wired end to end.
