@@ -74,7 +74,9 @@ ships, not a plugin surface. Seven items, each a type:
    distinct kinds: a UI that renders a partial as the message shows text the model may
    still retract. A tool call, its approval and its result share the backend's call id, so
    they correlate when several interleave. `ApprovalRequested` carries what the dialog
-   shows so the WebView can display the same bytes; `RanWithoutAsking` reports a call the
+   shows so the WebView can display the same bytes (no backend emits it yet: the gate
+   surfaces the request to its asker only on the answer, which the decision entry lists as
+   open); `RanWithoutAsking` reports a call the
    backend executed that never reached the gate, recorded under #40 rather than silently
    accepted; `Diagnostic` carries what the backend said outside the conversation — an init
    record, stderr — for a log. `SessionOpened` arrives once per attachment, as soon as the

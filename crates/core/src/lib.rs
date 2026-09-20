@@ -126,6 +126,21 @@
 //!     fn resume(&self, _: Resume) -> Result<Box<dyn Session>, BackendError> { todo!() }
 //! }
 //! ```
+//!
+//! Nor a session of its own, which is what would let it skip the lease:
+//!
+//! ```compile_fail,E0277
+//! use stanchion_core::backend::{AttachmentId, BackendError, InboxMessage, Session, TurnId, Usage, UserInput};
+//! struct Mine;
+//! impl Session for Mine {
+//!     fn attachment(&self) -> AttachmentId { todo!() }
+//!     fn send(&self, _: UserInput) -> Result<TurnId, BackendError> { todo!() }
+//!     fn deliver(&self, _: InboxMessage) -> Result<(), BackendError> { todo!() }
+//!     fn interrupt(&self) -> Result<(), BackendError> { todo!() }
+//!     fn terminate(&self) -> Result<(), BackendError> { todo!() }
+//!     fn usage(&self) -> Usage { todo!() }
+//! }
+//! ```
 
 pub mod backend;
 pub mod consent;

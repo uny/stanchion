@@ -113,8 +113,15 @@ impl SessionId {
 }
 
 impl fmt::Display for SessionId {
+    /// The value is the backend's, verbatim, so it is escaped here as every other
+    /// backend-supplied string on a labelled line is: it cannot end the line.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} session {}", self.backend.label(), self.value)
+        write!(
+            f,
+            "{} session {}",
+            self.backend.label(),
+            crate::consent::render::escape_inline(self.value.as_bytes())
+        )
     }
 }
 

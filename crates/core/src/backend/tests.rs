@@ -715,3 +715,30 @@ fn the_lease_ends_the_consent_run_on_terminate_and_on_drop() {
         assert_eq!(ask(), Some(crate::consent::policy::Refusal::UnknownRun));
     }
 }
+
+#[test]
+fn send_is_refused_mid_turn_without_the_capability_and_after_the_end() {
+    let (gate, _) = gate();
+    let start = |gate: &Arc<Consent>| Start {
+        conversation: ConversationId(1),
+        account: AccountId("acct".into()),
+        workspace_root: ws(),
+        gate: gate.clone(),
+        events: Arc::new(Recorder::default()),
+    };
+    let input = || UserInput {
+        text: "hello".into(),
+    };
+
+    assert!(!FakeNative.capabilities().mid_turn_input);
+    let native = FakeNative.start(start(&gate)).unwrap();
+    native.send(input()).unwrap();
+    assert_eq!(native.send(input()).unwrap_err(), BackendError::Busy);
+
+    assert!(FakeCli.capabilities().mid_turn_input);
+    let cli = FakeCli.start(start(&gate)).unwrap();
+    cli.send(input()).unwrap();
+    cli.send(input()).expect("a second input joins the turn");
+    cli.terminate().unwrap();
+    assert_eq!(cli.send(input()).unwrap_err(), BackendError::Ended);
+}
