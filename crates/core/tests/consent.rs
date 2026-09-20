@@ -643,18 +643,27 @@ fn a_write_token_is_void_once_its_target_changed_appeared_or_resolves_elsewhere(
 #[test]
 fn concurrent_writes_to_one_target_are_serialised_and_the_second_is_refused() {
     let ws = Workspace::new();
-    std::fs::write(ws.path().join("shared"), b"base").unwrap();
+    // Large enough that reading and hashing it takes measurable time, so without the lock
+    // both threads snapshot before either writes and the test fails rather than passing by
+    // scheduling luck.
+    std::fs::write(ws.path().join("shared"), vec![b'b'; 8 << 20]).unwrap();
+    std::fs::create_dir(ws.path().join("sub")).unwrap();
     let presenter = FakePresenter::new(Mode::Allow);
     let gate = Arc::new(gate(&presenter));
     let run = gate.register_run(Backend::Native);
 
-    // Both tokens are minted against the same prior. A check-then-write lets both land;
-    // verify-and-write under the lock lets exactly one.
+    // Both tokens are minted against the same prior, under the root spelled two ways. A
+    // check-then-write lets both land; verify-and-write under the lock lets exactly one.
     let token_1 = gate
         .ask(write_spec(run, ws.path(), "shared", b"from-1"))
         .unwrap();
     let token_2 = gate
-        .ask(write_spec(run, ws.path(), "shared", b"from-2"))
+        .ask(write_spec(
+            run,
+            &ws.path().join("sub").join(".."),
+            "shared",
+            b"from-2",
+        ))
         .unwrap();
     let barrier = Arc::new(std::sync::Barrier::new(2));
     let threads: Vec<_> = [token_1, token_2]
@@ -776,16 +785,18 @@ fn auto_run_takes_the_same_door_with_a_token_recorded_as_policy() {
 #[test]
 fn a_request_over_the_presenters_capacity_is_refused_before_the_presenter_is_asked() {
     let ws = Workspace::new();
-    let presenter = FakePresenter::with_capacity(Mode::Allow, 16);
+    // The capacity bounds everything shown — title and parsed fields, not only the body —
+    // so a short command fits and the same command padded past the limit does not.
+    let presenter = FakePresenter::with_capacity(Mode::Allow, 64);
     let gate = gate(&presenter);
     let run = gate.register_run(Backend::Native);
-    let long = "x".repeat(17);
+    let long = "x".repeat(64);
     assert!(matches!(
         gate.ask(shell_spec(run, ws.path(), &long)),
         Err(Refusal::OverCapacity {
-            bytes: 17,
-            capacity: 16
-        })
+            bytes,
+            capacity: 64
+        }) if bytes > 64
     ));
     // A write is refused on the same rule, not on its class.
     assert!(matches!(
@@ -912,6 +923,169 @@ fn an_affirmative_within_the_settle_interval_is_a_decline() {
 }
 
 #[test]
+fn an_affirmative_after_the_settle_interval_mints() {
+    let ws = Workspace::new();
+    let presenter = FakePresenter::new(Mode::Hold);
+    let gate = Arc::new(Consent::new(
+        presenter.clone(),
+        Arc::new(AlwaysAsk),
+        Config {
+            settle: Duration::from_millis(100),
+            queue_limit: 8,
+        },
+    ));
+    let run = gate.register_run(Backend::Native);
+    let asking = {
+        let gate = gate.clone();
+        let spec = shell_spec(run, ws.path(), "ls");
+        thread::spawn(move || gate.ask(spec))
+    };
+    wait_for(|| (!presenter.shown().is_empty()).then_some(()));
+    thread::sleep(Duration::from_millis(150));
+    presenter.answer_held(Answer::Allow);
+    assert!(asking.join().unwrap().is_ok());
+}
+
+#[test]
+fn a_request_withdrawn_while_queued_returns_without_waiting_for_the_dialog_on_screen() {
+    let ws = Workspace::new();
+    let presenter = FakePresenter::new(Mode::Hold);
+    let gate = Arc::new(gate(&presenter));
+    let run_a = gate.register_run(Backend::Native);
+    let run_b = gate.register_run(Backend::Codex);
+    let spawn = |gate: &Arc<Consent>, run: RunId, cmd: &str| {
+        let gate = gate.clone();
+        let spec = shell_spec(run, ws.path(), cmd);
+        thread::spawn(move || gate.ask(spec))
+    };
+    let first = spawn(&gate, run_a, "first");
+    wait_for(|| (!presenter.shown().is_empty()).then_some(()));
+    let second = spawn(&gate, run_b, "second");
+    thread::sleep(Duration::from_millis(100));
+    // Ending the second run while its request waits behind the first dialog: its `ask`
+    // returns now, not when the first dialog is answered, and the queue slot it held is
+    // free for another request.
+    gate.end_run(run_b);
+    wait_for(|| second.is_finished().then_some(()));
+    assert_eq!(second.join().unwrap().map(|_| ()), Err(Refusal::Withdrawn));
+    assert_eq!(
+        presenter.shown().len(),
+        1,
+        "no dialog opened for the ended run"
+    );
+    presenter.answer_held(Answer::Allow);
+    assert!(first.join().unwrap().is_ok());
+}
+
+#[test]
+fn a_labelled_value_cannot_forge_a_line_and_a_url_shows_the_host_a_client_would_use() {
+    let ws = Workspace::new();
+    let presenter = FakePresenter::new(Mode::Decline);
+    let gate = gate(&presenter);
+    let _ = gate.ask(RequestSpec {
+        run: None,
+        workspace_root: ws.path().to_path_buf(),
+        class: ClassSpec::McpServerEntry {
+            name: "x".into(),
+            old: None,
+            new: Program {
+                program: "npx\nnew arg[0]: --safe".into(),
+                args: vec!["--unsafe".into()],
+                env: vec![],
+            },
+        },
+    });
+    let _ = gate.ask(RequestSpec {
+        run: None,
+        workspace_root: ws.path().to_path_buf(),
+        class: ClassSpec::GatewayUrl {
+            old: None,
+            new: "https://evil.example\\@api.example.com/".into(),
+        },
+    });
+    let shown = presenter.shown();
+    let lines: Vec<&str> = shown[0].body.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "name: x",
+            "old: (none)",
+            "new program: npx\\u{A}new arg[0]: --safe",
+            "new arg[0]: --unsafe",
+        ],
+        "a newline in a labelled value must not start a line of its own"
+    );
+    assert_eq!(
+        shown[1].parsed,
+        vec![("new host".to_string(), "evil.example".to_string())],
+        "a backslash ends the authority as WHATWG parsers read it"
+    );
+}
+
+#[test]
+fn a_write_outside_the_workspace_or_through_a_second_name_is_refused_before_any_dialog() {
+    let ws = Workspace::new();
+    let outside = Workspace::new();
+    let presenter = FakePresenter::new(Mode::Allow);
+    let gate = gate(&presenter);
+    let run = gate.register_run(Backend::Native);
+    let refused = |r: Result<_, Refusal>| matches!(r, Err(Refusal::OutsideWorkspace(_)));
+
+    // `..` out of the root, and an absolute path elsewhere.
+    let up = format!(
+        "../{}/escaped",
+        outside.path().file_name().unwrap().to_str().unwrap()
+    );
+    assert!(refused(gate.ask(write_spec(run, ws.path(), &up, b"x"))));
+    assert!(refused(gate.ask(write_spec(
+        run,
+        ws.path(),
+        outside.path().join("escaped").to_str().unwrap(),
+        b"x"
+    ))));
+    // A directory inside the root that is a symlink to one outside it.
+    std::os::unix::fs::symlink(outside.path(), ws.path().join("link")).unwrap();
+    assert!(refused(gate.ask(write_spec(
+        run,
+        ws.path(),
+        "link/escaped",
+        b"x"
+    ))));
+    // A file inside the root that is a second hard link to one outside it.
+    std::fs::write(outside.path().join("victim"), b"victim").unwrap();
+    std::fs::hard_link(outside.path().join("victim"), ws.path().join("twin")).unwrap();
+    assert!(matches!(
+        gate.ask(write_spec(run, ws.path(), "twin", b"x")),
+        Err(Refusal::Unresolvable(_))
+    ));
+
+    assert!(presenter.shown().is_empty());
+    assert!(!outside.path().join("escaped").exists());
+    assert_eq!(
+        std::fs::read(outside.path().join("victim")).unwrap(),
+        b"victim"
+    );
+
+    // The dialog for a write inside the root names where the bytes land.
+    let token = gate.ask(write_spec(run, ws.path(), "in", b"x")).unwrap();
+    let shown = presenter.shown();
+    assert_eq!(
+        shown[0].parsed,
+        vec![
+            (
+                "path".into(),
+                escape(ws.path().join("in").as_os_str().as_encoded_bytes())
+            ),
+            (
+                "resolves to".into(),
+                escape(ws.path().join("in").as_os_str().as_encoded_bytes())
+            ),
+        ]
+    );
+    drop(token);
+}
+
+#[test]
 fn a_token_opens_only_the_door_for_its_class() {
     let ws = Workspace::new();
     let presenter = FakePresenter::new(Mode::Allow);
@@ -931,6 +1105,26 @@ fn a_token_opens_only_the_door_for_its_class() {
     let token = gate.ask(shell_spec(run, ws.path(), "ls")).unwrap();
     assert_eq!(
         SettingsWriter.apply(&gate, token, &mut effects),
+        Err(Refusal::WrongDoor)
+    );
+    // And the other way round: a settings token opens neither the executor nor the run
+    // starter.
+    let settings = RequestSpec {
+        run: Some(run),
+        workspace_root: ws.path().to_path_buf(),
+        class: ClassSpec::GatewayUrl {
+            old: None,
+            new: "https://api.example.com/".into(),
+        },
+    };
+    let token = gate.ask(settings.clone()).unwrap();
+    assert_eq!(
+        NativeExecutor.execute(&gate, token, &mut effects),
+        Err(Refusal::WrongDoor)
+    );
+    let token = gate.ask(settings).unwrap();
+    assert_eq!(
+        RunStarter.start(&gate, token, &mut effects),
         Err(Refusal::WrongDoor)
     );
     assert_eq!(effects.count(), 0);

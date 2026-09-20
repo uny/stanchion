@@ -55,7 +55,26 @@ impl ConsentPresenter for FailClosed {
 mod tests {
     use super::*;
 
-    const CAPABILITY: &str = include_str!("../capabilities/default.json");
+    /// Every capability file, not only the default one: Tauri loads the whole directory,
+    /// so a permission added in a second file widens the WebView exactly as one here would.
+    fn capabilities() -> Vec<(String, String)> {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities");
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .expect("capabilities/ exists")
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "json" || x == "toml"))
+            .map(|p| {
+                (
+                    p.display().to_string(),
+                    std::fs::read_to_string(&p).unwrap(),
+                )
+            })
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "no capability files");
+        files
+    }
 
     #[test]
     fn the_button_list_is_negative_first() {
@@ -74,21 +93,25 @@ mod tests {
     fn the_capability_grants_no_dialog_permission() {
         // `tauri-plugin-dialog` hands its result back to the WebView, which is the path the
         // decision closes. Its identifiers are `dialog:...`.
-        assert!(
-            !CAPABILITY.contains("\"dialog:"),
-            "capabilities/default.json grants a dialog permission"
-        );
+        for (file, text) in capabilities() {
+            assert!(
+                !text.contains("\"dialog:"),
+                "{file} grants a dialog permission"
+            );
+        }
     }
 
     #[test]
     fn the_capability_grants_no_approval_shaped_command() {
-        for word in ["approve", "consent", "allow-answer", "decision"] {
-            assert!(
-                !CAPABILITY
-                    .to_ascii_lowercase()
-                    .contains(&format!("allow-{word}")),
-                "capabilities/default.json grants an approval-shaped command: {word}"
-            );
+        // Tauri names a command's permission `allow-<kebab-command>`.
+        for (file, text) in capabilities() {
+            let text = text.to_ascii_lowercase();
+            for word in ["approve", "consent", "answer", "decision"] {
+                assert!(
+                    !text.contains(&format!("allow-{word}")),
+                    "{file} grants an approval-shaped command: {word}"
+                );
+            }
         }
     }
 
