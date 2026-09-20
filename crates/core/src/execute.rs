@@ -190,13 +190,17 @@ impl CliApproval {
             ClassSpec::CliCommand { cli_request_id, .. } => cli_request_id.clone(),
             _ => return Err(Refusal::WrongDoor),
         };
-        match gate.ask(spec) {
-            Ok(token) => self.allow(gate, token, transport),
-            Err(refusal) => {
-                self.deny(&cli_request_id, &refusal.to_string(), transport);
-                Err(refusal)
-            }
-        }
+        // A token minted and then overtaken — its run ended, its request cancelled — is
+        // refused at the door, and that refusal owes the CLI a deny as much as any other.
+        let refusal = match gate.ask(spec) {
+            Ok(token) => match self.allow(gate, token, transport) {
+                Ok(()) => return Ok(()),
+                Err(refusal) => refusal,
+            },
+            Err(refusal) => refusal,
+        };
+        self.deny(&cli_request_id, &refusal.to_string(), transport);
+        Err(refusal)
     }
 
     /// Sends the *allow* reply. Consumes the token.
