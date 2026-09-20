@@ -101,7 +101,19 @@
 //!
 //! It is not serialisable either, which no fixture can show directly: this crate depends on
 //! no serialisation library, and `cargo tree` in CI is what keeps that so.
+//!
+//! The run backend contract (`backend`) keeps the same rule from the other side: the code
+//! above a backend holds a session and has nothing on it by which to answer an approval —
+//! the backend asks the gate itself, and an answer has no method to arrive through:
+//!
+//! ```compile_fail,E0599
+//! use stanchion_core::{backend::Session, consent::{presenter::Answer, request::InvocationId}};
+//! fn go(session: &dyn Session, invocation: InvocationId) {
+//!     session.resolve(invocation, Answer::Allow);
+//! }
+//! ```
 
+pub mod backend;
 pub mod consent;
 pub mod execute;
 
