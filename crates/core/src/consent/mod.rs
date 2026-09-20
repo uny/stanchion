@@ -19,7 +19,7 @@ pub mod token;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use policy::{Policy, Refusal, Tier};
@@ -78,10 +78,12 @@ pub struct Consent {
     policy: Arc<dyn Policy>,
     config: Config,
     state: Mutex<State>,
-    /// Held for the life of one presentation, so at most one is outstanding.
-    presenting: Mutex<()>,
-    /// One lock per workspace root, held across verifying a write's precondition and
-    /// performing the write. Serialises the core's own writers, and only those.
+    /// Whether a presentation is outstanding; at most one is. A request waits here for
+    /// its turn, and is woken when the slot frees or when it is withdrawn.
+    slot: Mutex<bool>,
+    slot_changed: Condvar,
+    /// One lock per canonical write target, held across verifying a write's precondition
+    /// and performing the write. Serialises the core's own writers, and only those.
     write_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
 }
 
@@ -96,7 +98,8 @@ impl Consent {
             policy,
             config,
             state: Mutex::new(State::default()),
-            presenting: Mutex::new(()),
+            slot: Mutex::new(false),
+            slot_changed: Condvar::new(),
             write_locks: Mutex::new(HashMap::new()),
         }
     }
@@ -118,40 +121,54 @@ impl Consent {
 
     /// Ends a run: its pending requests are withdrawn and its tokens are void.
     pub fn end_run(&self, run: RunId) {
-        let mut s = self.state();
-        s.live_runs.remove(&run);
-        let pending: Vec<InvocationId> = s
-            .pending
-            .iter()
-            .filter(|(_, p)| matches!(p.binding, Binding::Run { id, .. } if id == run))
-            .map(|(inv, _)| *inv)
-            .collect();
-        for inv in pending {
-            self.withdraw_locked(&mut s, inv);
-        }
+        let handles = {
+            let mut s = self.state();
+            s.live_runs.remove(&run);
+            let pending: Vec<InvocationId> = s
+                .pending
+                .iter()
+                .filter(|(_, p)| matches!(p.binding, Binding::Run { id, .. } if id == run))
+                .map(|(inv, _)| *inv)
+                .collect();
+            pending
+                .into_iter()
+                .filter_map(|inv| withdraw_locked(&mut s, inv))
+                .collect::<Vec<_>>()
+        };
+        self.dismiss_all(handles);
     }
 
     /// Cancels one request. A dialog it has open is dismissed; a token minted for it is
     /// void; an answer that arrives afterwards mints nothing.
     pub fn cancel(&self, invocation: InvocationId) {
-        let mut s = self.state();
-        self.withdraw_locked(&mut s, invocation);
+        let handle = withdraw_locked(&mut self.state(), invocation);
+        self.dismiss_all(handle);
     }
 
-    fn withdraw_locked(&self, s: &mut State, invocation: InvocationId) {
-        s.withdrawn.insert(invocation);
-        if let Some(p) = s.pending.get_mut(&invocation) {
-            p.withdrawn = true;
-            // Wakes the waiting `ask` whether or not the presenter ever answers.
-            let _ = p.tx.send(Outcome::Withdrawn);
-            if let Some(h) = p.handle {
-                self.presenter.dismiss(h);
-            }
+    /// Dismisses dialogs *after* the gate's lock is released: `dismiss` is the shell's code
+    /// and may hop threads or call back into the gate, and neither may happen under it.
+    /// Also wakes every request waiting for the slot, so a withdrawn one stops waiting.
+    fn dismiss_all(&self, handles: impl IntoIterator<Item = Handle>) {
+        for h in handles {
+            self.presenter.dismiss(h);
         }
+        // Under the slot lock, so a waiter between its check and its wait is not missed.
+        let _slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        self.slot_changed.notify_all();
+    }
+
+    fn is_withdrawn(&self, invocation: InvocationId) -> bool {
+        self.state()
+            .pending
+            .get(&invocation)
+            .is_none_or(|p| p.withdrawn)
     }
 
     /// Asks for consent. Blocks the calling thread until there is an answer or the request
     /// is withdrawn. `Ok` is the only way a [`ConsentToken`] comes into existence.
+    ///
+    /// Never call this from the thread the presenter needs — a native modal runs on the
+    /// main thread, and a main thread parked here would never open it.
     pub fn ask(&self, spec: RequestSpec) -> Result<ConsentToken, Refusal> {
         let request = Arc::new(self.build(spec)?);
 
@@ -165,11 +182,9 @@ impl Consent {
 
         let rendered = render(&request);
         let capacity = self.presenter.capacity();
-        if rendered.body.len() > capacity {
-            return Err(Refusal::OverCapacity {
-                bytes: rendered.body.len(),
-                capacity,
-            });
+        let bytes = rendered.shown_len();
+        if bytes > capacity {
+            return Err(Refusal::OverCapacity { bytes, capacity });
         }
 
         let (tx, rx) = mpsc::channel();
@@ -178,6 +193,13 @@ impl Consent {
             let mut s = self.state();
             if s.queued >= self.config.queue_limit {
                 return Err(Refusal::QueueFull);
+            }
+            // The run was live when the request was built; it may have ended since, and
+            // a request registered now would be one `end_run` has already looked for.
+            if let Binding::Run { id, .. } = request.binding {
+                if !s.live_runs.contains_key(&id) {
+                    return Err(Refusal::Withdrawn);
+                }
             }
             s.queued += 1;
             s.pending.insert(
@@ -232,16 +254,24 @@ impl Consent {
         tx: Sender<Outcome>,
         rx: &mpsc::Receiver<Outcome>,
     ) -> Result<Outcome, Refusal> {
-        let _slot = self.presenting.lock().unwrap_or_else(|e| e.into_inner());
-        // Withdrawn while queued: do not open a dialog for it.
-        if self
-            .state()
-            .pending
-            .get(&invocation)
-            .is_none_or(|p| p.withdrawn)
-        {
-            return Ok(Outcome::Withdrawn);
-        }
+        let _slot = {
+            let mut busy = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                // Withdrawn while queued: do not open a dialog for it, and do not keep it
+                // waiting behind the one on screen.
+                if self.is_withdrawn(invocation) {
+                    return Ok(Outcome::Withdrawn);
+                }
+                if !*busy {
+                    *busy = true;
+                    break Slot(self);
+                }
+                busy = self
+                    .slot_changed
+                    .wait(busy)
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+        };
         let responder = Responder {
             invocation,
             opened: Instant::now(),
@@ -252,8 +282,20 @@ impl Consent {
             .presenter
             .show(rendered, responder)
             .map_err(|e| Refusal::PresenterFailed(e.0))?;
-        if let Some(p) = self.state().pending.get_mut(&invocation) {
-            p.handle = Some(handle);
+        // Withdrawn between `show` and here: the withdrawal saw no handle to dismiss, so
+        // this is where the dialog it left open is closed.
+        let withdrawn_meanwhile = {
+            let mut s = self.state();
+            match s.pending.get_mut(&invocation) {
+                Some(p) => {
+                    p.handle = Some(handle);
+                    p.withdrawn
+                }
+                None => true,
+            }
+        };
+        if withdrawn_meanwhile {
+            self.presenter.dismiss(handle);
         }
         // The channel cannot close while the gate holds a sender for withdrawal; a
         // responder dropped unanswered reports itself as a failure instead.
@@ -293,7 +335,7 @@ impl Consent {
     }
 
     /// Performs an approved write: verifies the precondition and writes, as one operation
-    /// under the workspace's write lock. What this guarantees is that the core's write
+    /// under the target's write lock. What this guarantees is that the core's write
     /// lands on what was verified unless a process outside the core changed it inside the
     /// window; a check followed by a write would not guarantee even that.
     pub(crate) fn write(&self, approved: &Approved) -> Result<(), Refusal> {
@@ -307,12 +349,15 @@ impl Consent {
         else {
             return Err(Refusal::WrongDoor);
         };
+        // Keyed by the canonical target, so two requests naming one file — under two
+        // roots, or one root spelled two ways — contend for the same lock.
+        let key = match path.file_name() {
+            Some(name) => parent.join(name),
+            None => return Err(Refusal::Unresolvable("path has no file name".into())),
+        };
         let lock = {
             let mut locks = self.write_locks.lock().unwrap_or_else(|e| e.into_inner());
-            locks
-                .entry(approved.request.workspace_root.clone())
-                .or_default()
-                .clone()
+            locks.entry(key).or_default().clone()
         };
         let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
         // A target that can no longer be snapshotted — a symlink or a directory where a
@@ -347,16 +392,23 @@ impl Consent {
             None => Binding::Application,
         };
         let class = match spec.class {
-            ClassSpec::ShellCommand { command, cwd, env } => {
-                Class::ShellCommand { command, cwd, env }
-            }
+            ClassSpec::ShellCommand { command, cwd, env } => Class::ShellCommand {
+                command,
+                cwd: resolve_against(&spec.workspace_root, cwd),
+                env,
+            },
             ClassSpec::FileWrite { path, content } => {
-                let path = if path.is_absolute() {
-                    path
-                } else {
-                    spec.workspace_root.join(path)
-                };
+                let path = resolve_against(&spec.workspace_root, path);
                 let (parent, prior) = snapshot(&path)?;
+                // The workspace root is the boundary for filesystem tools
+                // (`docs/architecture.md`); compared on canonical paths, so neither `..`
+                // nor a symlink out of the tree crosses it.
+                let root = spec.workspace_root.canonicalize().map_err(|e| {
+                    Refusal::Unresolvable(format!("{}: {e}", spec.workspace_root.display()))
+                })?;
+                if !parent.starts_with(&root) {
+                    return Err(Refusal::OutsideWorkspace(path));
+                }
                 let content: Arc<[u8]> = content.into();
                 let content_hash = Sha256Digest::of(&content);
                 Class::FileWrite {
@@ -392,7 +444,7 @@ impl Consent {
             } => Class::CliCommand {
                 cli_request_id,
                 command,
-                cwd,
+                cwd: resolve_against(&spec.workspace_root, cwd),
             },
             ClassSpec::BridgeForward { tool, arguments } => {
                 Class::BridgeForward { tool, arguments }
@@ -409,8 +461,32 @@ impl Consent {
     }
 }
 
+/// The presentation slot, held for the life of one presentation. Frees itself however the
+/// presentation ends — answered, withdrawn, failed, or unwound — and wakes the next waiter.
+struct Slot<'a>(&'a Consent);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        let mut busy = self.0.slot.lock().unwrap_or_else(|e| e.into_inner());
+        *busy = false;
+        self.0.slot_changed.notify_all();
+    }
+}
+
+/// Marks a request withdrawn and wakes its `ask`. Returns the handle of a dialog it has
+/// open, for the caller to dismiss once the lock is released.
+fn withdraw_locked(s: &mut State, invocation: InvocationId) -> Option<Handle> {
+    s.withdrawn.insert(invocation);
+    let p = s.pending.get_mut(&invocation)?;
+    p.withdrawn = true;
+    // Wakes the waiting `ask` whether or not the presenter ever answers.
+    let _ = p.tx.send(Outcome::Withdrawn);
+    p.handle
+}
+
 /// The canonical parent directory and the state of the target itself. `symlink_metadata`,
-/// so a symlink where a file was is a change, not a file.
+/// so a symlink where a file was is a change, not a file; and a file with a second hard
+/// link is not a regular file either, since writing it writes the other name too.
 fn snapshot(path: &Path) -> Result<(PathBuf, Prior), Refusal> {
     let parent = path
         .parent()
@@ -421,7 +497,7 @@ fn snapshot(path: &Path) -> Result<(PathBuf, Prior), Refusal> {
     let prior = match std::fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Prior::Absent,
         Err(e) => return Err(Refusal::Unresolvable(format!("{}: {e}", path.display()))),
-        Ok(meta) if meta.file_type().is_file() => {
+        Ok(meta) if meta.file_type().is_file() && !hard_linked(&meta) => {
             let bytes = std::fs::read(path)
                 .map_err(|e| Refusal::Unresolvable(format!("{}: {e}", path.display())))?;
             Prior::File(Sha256Digest::of(&bytes))
@@ -436,11 +512,34 @@ fn snapshot(path: &Path) -> Result<(PathBuf, Prior), Refusal> {
     Ok((parent, prior))
 }
 
+/// A relative path is relative to the workspace root, never to the process's directory.
+fn resolve_against(root: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    }
+}
+
+#[cfg(unix)]
+fn hard_linked(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    meta.nlink() > 1
+}
+
+#[cfg(not(unix))]
+fn hard_linked(_: &std::fs::Metadata) -> bool {
+    false
+}
+
 /// Renders a request for the dialog. Labels are core-generated; every model-supplied
-/// value passes through [`render::escape`] on its own, so the two never share a field.
+/// value passes through the escape on its own, so the two never share a field. A body
+/// that is one value (a command, a file's content) keeps its newlines; a value on a
+/// labelled line goes through [`render::escape_inline`], so it cannot end its line and
+/// forge the next.
 pub fn render(request: &Request) -> Rendered {
-    let esc = |s: &str| render::escape(s.as_bytes());
-    let path = |p: &Path| render::escape(p.as_os_str().as_encoded_bytes());
+    let esc = |s: &str| render::escape_inline(s.as_bytes());
+    let path = |p: &Path| render::escape_inline(p.as_os_str().as_encoded_bytes());
     let program = |label: &str, p: &request::Program, out: &mut Vec<String>| {
         out.push(format!("{label} program: {}", esc(&p.program)));
         for (i, a) in p.args.iter().enumerate() {
@@ -468,11 +567,19 @@ pub fn render(request: &Request) -> Rendered {
     let mut lines: Vec<String> = Vec::new();
     let mut parsed: Vec<(String, String)> = Vec::new();
     match &request.class {
-        Class::ShellCommand { command, .. } => lines.push(esc(command)),
+        Class::ShellCommand { command, .. } => lines.push(render::escape(command.as_bytes())),
         Class::FileWrite {
-            path: p, content, ..
+            path: p,
+            parent,
+            content,
+            ..
         } => {
             parsed.push(("path".into(), path(p)));
+            // Where the bytes land, with every symlink in the directory resolved; the
+            // request was bound to this at build time.
+            if let Some(name) = p.file_name() {
+                parsed.push(("resolves to".into(), path(&parent.join(name))));
+            }
             lines.push(render::escape(content));
         }
         Class::McpServerEntry { name, old, new } => {
@@ -504,7 +611,7 @@ pub fn render(request: &Request) -> Rendered {
             parsed.push(("host".into(), esc(&host_of(&profile.base_url))));
         }
         Class::CliCommand { command, cwd, .. } => {
-            lines.push(esc(command));
+            lines.push(render::escape(command.as_bytes()));
             parsed.push(("cwd".into(), path(cwd)));
         }
         Class::BridgeForward { tool, arguments } => {
@@ -524,10 +631,14 @@ pub fn render(request: &Request) -> Rendered {
 }
 
 /// The host a URL actually names, so `https://api.example.com@evil.example/` reads as what
-/// it is. Shown beside the raw bytes, never instead of them.
+/// it is. Shown beside the raw bytes, never instead of them. A backslash ends the authority
+/// as a slash does, which is how WHATWG clients read `https://evil.example\@api.example.com/`.
 fn host_of(url: &str) -> String {
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
-    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = after_scheme
+        .split(['/', '\\', '?', '#'])
+        .next()
+        .unwrap_or("");
     let host_port = authority.rsplit('@').next().unwrap_or("");
     let host = if host_port.starts_with('[') {
         host_port

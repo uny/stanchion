@@ -1,8 +1,9 @@
 //! The request a consent token is bound to.
 //!
 //! A [`Request`] is built by the gate and by nothing else: the invocation id is core-issued,
-//! the run is one the gate registered, every path is resolved, and for a write the content
-//! and the state of the file it replaces are snapshotted at build time. The caller supplies
+//! the run is one the gate registered, a relative path is resolved against the workspace
+//! root, and for a write the content and the state of the file it replaces are snapshotted
+//! at build time and the target is confined to the workspace. The caller supplies
 //! a [`RequestSpec`], which carries only what the model or the user chose; the fields that
 //! make the request unforgeable are the gate's to add. See `docs/decisions.md`, "Consent is
 //! a native dialog the core owns".

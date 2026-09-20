@@ -2,10 +2,12 @@
 //!
 //! The refused tier is rejected before any dialog opens, auto-run mints a token on policy
 //! and records it as such, and everything else asks. Policy is consulted again when an
-//! answer comes back, so a request re-classified while pending is honoured under the new
-//! classification, whatever the answer was.
+//! answer comes back, so a request re-classified into the refused tier while pending is
+//! refused whatever the answer was; a re-classification the other way changes nothing,
+//! since the answer given was to a dialog.
 
 use std::fmt;
+use std::path::PathBuf;
 
 use super::request::Request;
 
@@ -62,6 +64,8 @@ pub enum Refusal {
     /// Building the request failed — the path could not be resolved, the target could
     /// not be read.
     Unresolvable(String),
+    /// A write whose target, resolved, lies outside the workspace root.
+    OutsideWorkspace(PathBuf),
 }
 
 impl fmt::Display for Refusal {
@@ -84,6 +88,9 @@ impl fmt::Display for Refusal {
                 write!(f, "refused: precondition changed: {what}")
             }
             Refusal::Unresolvable(what) => write!(f, "refused: {what}"),
+            Refusal::OutsideWorkspace(path) => {
+                write!(f, "refused: {} is outside the workspace", path.display())
+            }
         }
     }
 }

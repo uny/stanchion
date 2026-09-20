@@ -38,12 +38,27 @@ pub struct Rendered {
     /// The whole of what will run, escaped. Nothing is truncated from the tail.
     pub body: String,
     /// Fields the core parsed, shown *alongside* the raw bytes — the host of a URL, the
-    /// path a write targets — never instead of them.
+    /// path a write targets — never instead of them. Every entry is shown: for a write the
+    /// destination is here and nowhere else, and it counts toward the capacity.
     pub parsed: Vec<(String, String)>,
     /// Button captions, negative first. A presenter adds them in this order, since the
     /// affirmative is never the default.
     pub negative: &'static str,
     pub affirmative: &'static str,
+}
+
+impl Rendered {
+    /// Every byte the presenter is asked to show, which is what [`ConsentPresenter::capacity`]
+    /// bounds.
+    pub fn shown_len(&self) -> usize {
+        self.title.len()
+            + self.body.len()
+            + self
+                .parsed
+                .iter()
+                .map(|(label, value)| label.len() + value.len())
+                .sum::<usize>()
+    }
 }
 
 /// Where a presenter's answer goes. Owned by the presenter until it answers; dropping it
@@ -58,6 +73,14 @@ pub struct Responder {
 impl Responder {
     pub fn invocation(&self) -> InvocationId {
         self.invocation
+    }
+
+    /// Marks the moment the dialog became visible. The settle interval is measured from
+    /// here; a presenter that shows its dialog after `show` returns — on another thread,
+    /// on the next turn of a run loop — calls this when it does, since the interval as
+    /// measured from `show` would otherwise be spent before the user could see anything.
+    pub fn shown(&mut self) {
+        self.opened = Instant::now();
     }
 
     /// Reports the user's answer. Timestamped here, at the moment the presenter saw the
@@ -112,11 +135,13 @@ pub trait ConsentPresenter: Send + Sync {
     fn capacity(&self) -> usize;
 
     /// Opens the dialog and returns at once. The answer arrives through `responder`.
-    /// `Err` means nothing was shown.
+    /// `Err` means nothing was shown. If the dialog appears later than this call returns,
+    /// call [`Responder::shown`] when it does.
     fn show(&self, rendered: &Rendered, responder: Responder) -> Result<Handle, PresenterError>;
 
     /// Closes a dialog whose request was withdrawn, so it does not stall the queue behind
     /// it. The presenter may still answer through the responder afterwards; the gate
-    /// ignores that.
+    /// ignores that. The handle may belong to a dialog already answered and closed, which
+    /// the presenter tolerates.
     fn dismiss(&self, handle: Handle);
 }
