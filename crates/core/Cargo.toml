@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 # `tauri` must never appear here, and neither may anything that implies a WebView. See the
 # crate docs. CI enforces the `tauri` half of that: `.github/workflows/build.yml` fails the

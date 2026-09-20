@@ -105,4 +105,4 @@ alternatives were rejected and why. Read it before proposing a different shape.
 
 ## License
 
-Not yet chosen. Tracked as an open decision in the issue tracker.
+[Apache-2.0](LICENSE).
