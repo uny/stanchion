@@ -205,8 +205,10 @@ mod lease {
         /// calls it too.
         pub(crate) fn end(&self) -> RunEnded {
             // `Once`, not a flag: a second caller blocks until the first has ended the run,
-            // so no proof is returned while the run is still live.
-            self.ended.call_once(|| self.gate.end_run(self.run));
+            // so no proof is returned while the run is still live. `_force` so that a panic
+            // in the presenter's `dismiss` does not turn every later `Drop` into another —
+            // `end_run` is idempotent, so running it again is harmless.
+            self.ended.call_once_force(|_| self.gate.end_run(self.run));
             RunEnded {
                 attachment: self.id,
             }
