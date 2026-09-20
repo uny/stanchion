@@ -674,11 +674,14 @@ Claude Code slice (#46) cannot be cut without that.
 
 **The contract is seven types, and the one thing it does not carry is an approval.** A
 backend receives the consent gate at `start` and asks it itself; nothing on the session
-trait takes an answer, so the code above — the shell, and the WebView behind it — has no
-handle by which to approve. This is the consent entry's rule seen from the other side: a
-`resolve(decision)` on the backend trait would be `approve(tool_call_id)` under another
-name, and the fact that it is the *shell* calling it rather than the WebView is no defence,
-since the shell's commands are what the WebView invokes. Capabilities are what a backend can
+trait takes an answer or hands out the consent run id, so the code above — the shell, and
+the WebView behind it — has no handle by which to approve, and none by which to ask the
+gate in the backend's name and redeem what it mints. This is the consent entry's rule seen
+from the other side: a `resolve(decision)` on the backend trait would be
+`approve(tool_call_id)` under another name, and the fact that it is the *shell* calling it
+rather than the WebView is no defence, since the shell's commands are what the WebView
+invokes. The traits are sealed, so the two backends this crate ships are the only two;
+"built in and static" is a compile error, not a convention. Capabilities are what a backend can
 promise, stated from measurement — which approvals reach the gate, what a resumed session
 does with a cut turn after an interrupt and, separately, after a crash (#42 measured that
 Claude Code asks before continuing after the first and may re-run the cut call after the
@@ -686,14 +689,20 @@ second, and the type says so rather than rounding both to one word) — and the 
 read them to offer or withhold an affordance and may not read them to change how an approval
 is handled. Otherwise capabilities become the branch #39 forbids.
 
-**The consent run is the attachment.** Four lifetimes were named in #39 — conversation,
-session, turn, process — and the one that had to be pinned to something existing is which of
-them the gate's `RunId` is, since tokens die with it. It is the attachment: one supervised
-process on a CLI backend, one loop instance on the native one. A token minted under a
-process that crashed is void before the resumed process exists, and a dialog pending from it
-is withdrawn rather than answered into the wrong process; a resume registers a new run. The
-cost is that a conversation's approval record spans several consent runs, which the record
-keys on. The alternative — the session as the run — would carry a pending token across a
+**The consent run is the attachment, and a lease is what ends it.** Four lifetimes were
+named in #39 — conversation, session, turn, process — and the one that had to be pinned to
+something existing is which of them the gate's `RunId` is, since tokens die with it. It is
+the attachment: one supervised process on a CLI backend, one loop instance on the native
+one. A backend holds it as an `Attachment` lease that registers the run when opened and ends
+it when dropped, so the run ends on `terminate`, on a crash, and when the session is dropped
+without either — "the backend remembered to call `end_run`" is not a path that exists. A
+token minted under a process that crashed is void before the resumed process exists, and a
+dialog pending from it is withdrawn rather than answered into the wrong process; a resume
+registers a new run. The cost is that a conversation's approval record spans several
+consent runs, which the record keys on. The session id, for its part, carries the account
+*and the workspace root* it was created under, and a resume takes the id and nothing else
+that names either: a CLI keys its transcripts by config directory and then by workspace
+(#42), so a session reattached under another root is at best not found. The alternative — the session as the run — would carry a pending token across a
 crash into a process that never saw the request, which is exactly the "last approved,
 unconfirmed command" row #40 already has to carry for the CLI's own resume behaviour, and
 the core should not add a second instance of it.

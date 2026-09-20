@@ -112,6 +112,20 @@
 //!     session.resolve(invocation, Answer::Allow);
 //! }
 //! ```
+//!
+//! And the backends are the ones this crate ships: the traits are sealed, so nothing
+//! outside can implement one and hand the code above a backend of its own:
+//!
+//! ```compile_fail,E0277
+//! use stanchion_core::backend::{Backend, BackendError, Capabilities, Resume, RunBackend, Session, Start};
+//! struct Mine;
+//! impl RunBackend for Mine {
+//!     fn kind(&self) -> Backend { Backend::Native }
+//!     fn capabilities(&self) -> Capabilities { todo!() }
+//!     fn start(&self, _: Start) -> Result<Box<dyn Session>, BackendError> { todo!() }
+//!     fn resume(&self, _: Resume) -> Result<Box<dyn Session>, BackendError> { todo!() }
+//! }
+//! ```
 
 pub mod backend;
 pub mod consent;

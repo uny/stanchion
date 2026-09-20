@@ -5,25 +5,34 @@
 //! `docs/architecture.md`, "Run backends", carries the contract and the four lifetimes; this
 //! module is it in types. Two backends implement it — `native` (the loop in this crate,
 //! M3) and `cli` (Claude Code in #46, Codex in #47) — and the code above them holds a
-//! [`RunBackend`] and a [`Session`] and never branches on [`Backend`]: `tests/backend.rs`
-//! drives two fakes through one function to keep that so.
+//! [`RunBackend`] and a [`Session`] and never branches on [`Backend`]: `tests` drives two
+//! independent fakes through one function to keep that so. The traits are sealed: the
+//! backends are built in and static, not a plugin surface.
 //!
 //! # What the trait does not carry
 //!
-//! **An approval decision.** A backend receives the consent gate at [`Start`] and asks it
-//! itself — on a CLI backend through [`crate::execute::CliApproval::resolve`], which owes the
-//! CLI exactly one reply. Upward it emits [`Event::ApprovalRequested`] for display, and
-//! nothing on [`Session`] takes an answer, so the code above — the shell, the WebView behind
-//! it — has no handle by which to approve. `crates/core/src/lib.rs` pins that with a
-//! `compile_fail` doctest beside the token ones.
+//! **An approval decision, or a way to reach one.** A backend receives the consent gate at
+//! [`Start`] and asks it itself — on a CLI backend through
+//! [`crate::execute::CliApproval::resolve`], which owes the CLI exactly one reply. Upward
+//! it emits [`Event::ApprovalRequested`] for display, and nothing on [`Session`] takes an
+//! answer or hands out the consent run id, so the code above — the shell, the WebView
+//! behind it — has no handle by which to approve or to ask the gate in the backend's
+//! name. `crates/core/src/lib.rs` pins the first with a `compile_fail` doctest beside the
+//! token ones; the second is the [`Attachment`] lease, which only this crate constructs.
 //!
 //! **A runtime.** Events reach the caller through an [`EventSink`] it supplies, on whatever
 //! thread the backend delivers from, as the presenter does for consent. Whether a backend
 //! drives its subprocess from a thread or an executor is that backend's business, decided
 //! when it is written.
 
+// The crate-private half of the surface — `SessionId::new`, the lease's constructor and
+// accessors — is what a backend uses, and the first backend is #46. Until it lands, the
+// tests are the only caller.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::consent::presenter::Rendered;
@@ -32,11 +41,18 @@ use crate::consent::Consent;
 
 pub use crate::consent::request::Backend;
 
+#[cfg(test)]
+mod tests;
+
+mod sealed {
+    pub trait Sealed {}
+}
+
 // ---------------------------------------------------------------------------------------
 // The four lifetimes
 
 /// The conversation as the GUI holds it. Core-issued, and the longest-lived of the four: it
-/// outlives every session, turn and process under it.
+/// outlives every session, turn and attachment under it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConversationId(pub u64);
 
@@ -47,23 +63,31 @@ pub struct ConversationId(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AccountId(pub String);
 
-/// A backend's own identifier for a session, as the core stored it, with the account it was
-/// created under. The two travel together on purpose: [`RunBackend::resume`] takes a
-/// `SessionId` and nothing else that names an account, so a stored session cannot be
-/// reattached under a different one — there is nowhere at the call site to say so.
+/// A backend's own identifier for a session, as the core stored it, with the account and
+/// the workspace it was created under. The three travel together on purpose:
+/// [`RunBackend::resume`] takes a `SessionId` and nothing else that names an account or a
+/// workspace, so a stored session cannot be reattached under a different one — there is
+/// nowhere at the call site to say so. Only a backend constructs one, from what the
+/// backend reported; the code above stores and returns it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SessionId {
     backend: Backend,
     account: AccountId,
+    workspace_root: PathBuf,
     value: String,
 }
 
 impl SessionId {
-    /// Only a backend calls this, with the identifier the backend reported.
-    pub fn new(backend: Backend, account: AccountId, value: impl Into<String>) -> Self {
+    pub(crate) fn new(
+        backend: Backend,
+        account: AccountId,
+        workspace_root: PathBuf,
+        value: impl Into<String>,
+    ) -> Self {
         SessionId {
             backend,
             account,
+            workspace_root,
             value: value.into(),
         }
     }
@@ -74,6 +98,10 @@ impl SessionId {
 
     pub fn account(&self) -> &AccountId {
         &self.account
+    }
+
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
     }
 
     /// The backend's identifier, verbatim. Never "the latest": a resume names this.
@@ -89,21 +117,81 @@ impl fmt::Display for SessionId {
 }
 
 /// One turn: from an input the backend accepted to the point the backend reports the model
-/// has stopped, however it stopped. Core-issued.
+/// has stopped, however it stopped. Core-issued from one counter for the process, so a turn
+/// id is unique across every attachment and conversation, not merely within one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TurnId(pub u64);
+pub struct TurnId(u64);
 
 /// One attachment of the core to a session: on a CLI backend one supervised process, on the
 /// native backend one instance of the loop. Core-issued. A session may see several — each
-/// resume is a new one — and a turn a process cut is a turn the next process did not
+/// resume is a new one — and a turn an attachment cut is a turn the next one did not
 /// finish.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct AttachmentId(pub u64);
+pub struct AttachmentId(u64);
+
+static NEXT_TURN: AtomicU64 = AtomicU64::new(1);
+static NEXT_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
+
+/// The lease a backend holds on the consent gate for one attachment. Registers the consent
+/// run when opened and ends it when dropped, so the run cannot outlive the attachment
+/// whatever path ended it — `terminate`, a crash, or the session being dropped. The run id
+/// is not exposed: a backend asks the gate through [`Attachment::run`] from inside this
+/// crate, and the code above has no way to ask in its name.
+pub struct Attachment {
+    id: AttachmentId,
+    run: RunId,
+    gate: Arc<Consent>,
+    ended: AtomicBool,
+}
+
+impl Attachment {
+    pub(crate) fn open(gate: Arc<Consent>, backend: Backend) -> Self {
+        Attachment {
+            id: AttachmentId(NEXT_ATTACHMENT.fetch_add(1, Ordering::SeqCst)),
+            run: gate.register_run(backend),
+            gate,
+            ended: AtomicBool::new(false),
+        }
+    }
+
+    pub fn id(&self) -> AttachmentId {
+        self.id
+    }
+
+    /// The consent run to bind requests to. Crate-private on purpose.
+    pub(crate) fn run(&self) -> RunId {
+        self.run
+    }
+
+    pub(crate) fn gate(&self) -> &Consent {
+        &self.gate
+    }
+
+    /// Allocates the next turn id.
+    pub(crate) fn next_turn(&self) -> TurnId {
+        TurnId(NEXT_TURN.fetch_add(1, Ordering::SeqCst))
+    }
+
+    /// Ends the consent run now — pending requests withdrawn, tokens void. Idempotent;
+    /// `Drop` calls it too.
+    pub(crate) fn end(&self) {
+        if !self.ended.swap(true, Ordering::SeqCst) {
+            self.gate.end_run(self.run);
+        }
+    }
+}
+
+impl Drop for Attachment {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
 
 // ---------------------------------------------------------------------------------------
 // Capabilities
 
-/// Which approvals reach the core's gate.
+/// Which approvals reach the core's gate. Shown to the user where they read approvals
+/// (#40); never read to decide how one is handled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApprovalReach {
     /// Every call: the core classifies and executes each one (native).
@@ -114,8 +202,9 @@ pub enum ApprovalReach {
     Delegated,
 }
 
-/// What a resumed session does with a turn that was cut. Stated per backend and per cause,
-/// from measurement, never from documentation (#42).
+/// What a resumed session was *observed* to do with a turn that was cut, on the backend
+/// version named in [`Capabilities::measured_on`]. Per cause, from measurement, never from
+/// documentation (#42). A promise about a later version is not one this type makes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CutTurn {
     /// The cut call is reported to the model as rejected, and the model asks before it
@@ -130,8 +219,8 @@ pub enum CutTurn {
 }
 
 /// What a backend can promise. The code above may read this to enable or disable an
-/// affordance — a resume button, a mid-turn input box — and may not read it to alter the
-/// approval path, which is the same for every backend.
+/// affordance — a resume button, a mid-turn input box, a "delegated" badge — and may not
+/// read it to alter the approval path, which is the same for every backend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     /// [`RunBackend::resume`] works, by a stored [`SessionId`].
@@ -139,24 +228,29 @@ pub struct Capabilities {
     /// [`Session::send`] is accepted while a turn is in progress.
     pub mid_turn_input: bool,
     pub approvals: ApprovalReach,
-    /// Whether [`Usage`] is ever anything but [`Usage::NotReported`].
-    pub reports_usage: bool,
     /// After [`Session::interrupt`].
     pub after_interrupt: CutTurn,
-    /// After the process died without being asked to.
+    /// After the attachment ended without being asked to.
     pub after_crash: CutTurn,
+    /// The backend version the two `CutTurn`s were measured on, as the backend reports
+    /// its version — `"claude 2.1.266"` — or `"none"` when unmeasured.
+    pub measured_on: &'static str,
 }
 
 // ---------------------------------------------------------------------------------------
 // Usage
 
-/// The backend's estimate of cost, in US dollars. An estimate: the UI labels it as such and
-/// never as what a subscription will bill, which the core has no way to know.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EstimatedUsd(pub f64);
+/// The backend's estimate of cost, in millionths of a US dollar. An estimate: the UI labels
+/// it as such and never as what a subscription will bill, which the core has no way to
+/// know. Integer so that it is never negative, infinite or NaN.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EstimatedUsd {
+    pub micros: u64,
+}
 
-/// Token counts and cost as the backend reports them.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Token counts and cost as the backend reports them. In [`Event::Usage`] the figures are
+/// for that turn; from [`Session::usage`] they are the attachment's total so far.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Usage {
     /// The backend has not said. Distinct from zero, and shown as "not reported".
     NotReported,
@@ -191,16 +285,17 @@ pub struct InboxMessage {
     pub text: String,
 }
 
-/// Where an inbox message is. Three states, reported through [`Event::Delivery`] as each is
-/// reached; a message is at exactly one at a time, and a backend that cannot tell the last
-/// two apart says so by never reporting [`Delivery::Injected`].
+/// Where an inbox message is, as observable facts. Three states, reported through
+/// [`Event::Delivery`] as each is reached; a message is at exactly one at a time, and a
+/// backend that cannot observe the last never reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delivery {
     /// The core holds it; the backend has not taken it.
     Enqueued,
-    /// The backend took it and will present it to the model.
+    /// The backend has written it to its input — the CLI's stdin, the app-server
+    /// connection, the native loop's queue. Whether the model sees it is not yet known.
     Accepted,
-    /// It is in the model's context.
+    /// The backend has confirmed it is in the model's context.
     Injected,
 }
 
@@ -220,13 +315,20 @@ pub enum Role {
     Assistant,
 }
 
+/// The backend's own identifier for one tool call, verbatim, so a call, its approval and
+/// its result can be correlated in a turn where several interleave.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ToolCallId(pub String);
+
 /// How a turn ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TurnEnd {
     /// The model stopped on its own.
     Completed,
     /// [`Session::interrupt`] cut it.
     Interrupted,
+    /// The backend reported the turn failed. `detail` is core-generated.
+    Failed { detail: String },
     /// The attachment ended under it. What a resume does with it is
     /// [`Capabilities::after_crash`].
     Cut,
@@ -237,6 +339,9 @@ pub enum TurnEnd {
 pub enum Exit {
     /// [`Session::terminate`] was called.
     Terminated,
+    /// The process exited on its own, cleanly, without being asked — end of input, a
+    /// non-interactive backend finishing. `status` is the exit status when there is one.
+    Exited { status: Option<i32> },
     /// The process died without being asked to. `detail` is core-generated, never the
     /// process's own last words unescaped.
     Crashed { detail: String },
@@ -247,8 +352,9 @@ pub enum Exit {
 /// a partial as if it were the message shows text the model may still retract.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// The backend reported its session identifier. Once per attachment, before any turn;
-    /// on a resume it repeats the identifier that was resumed.
+    /// The backend learned its session identifier: at most once per attachment, as soon
+    /// as the backend knows it, which on a CLI may be after the first input rather than
+    /// before. On a resume it repeats the identifier that was resumed.
     SessionOpened {
         session: SessionId,
     },
@@ -256,7 +362,7 @@ pub enum Event {
         turn: TurnId,
     },
     /// A fragment of a message still being produced. `text` is a delta, appended to what
-    /// came before in the same turn.
+    /// came before it since the last [`Event::MessageComplete`] in the same turn.
     MessagePartial {
         turn: TurnId,
         text: String,
@@ -266,17 +372,26 @@ pub enum Event {
         message: Message,
     },
     /// A call the backend made or is making, for display. Whether it asked first is the
-    /// next two events' business.
+    /// next events' business.
     ToolCall {
         turn: TurnId,
+        call: ToolCallId,
         name: String,
         /// Escaped, core-generated text of the arguments, never markup the model wrote.
         arguments: String,
+    },
+    /// What the call returned, escaped, for display.
+    ToolResult {
+        turn: TurnId,
+        call: ToolCallId,
+        output: String,
+        is_error: bool,
     },
     /// The gate was asked. `rendered` is what the dialog shows, so the WebView can display
     /// the same bytes; it cannot answer them.
     ApprovalRequested {
         turn: TurnId,
+        call: ToolCallId,
         invocation: InvocationId,
         rendered: Rendered,
     },
@@ -284,6 +399,7 @@ pub enum Event {
     /// that — only that the request is no longer pending and which way it went.
     ApprovalResolved {
         turn: TurnId,
+        call: ToolCallId,
         invocation: InvocationId,
         allowed: bool,
     },
@@ -292,6 +408,7 @@ pub enum Event {
     /// silently accepted. A backend with [`ApprovalReach::Every`] never emits this.
     RanWithoutAsking {
         turn: TurnId,
+        call: ToolCallId,
         name: String,
         arguments: String,
     },
@@ -300,15 +417,21 @@ pub enum Event {
         id: DeliveryId,
         state: Delivery,
     },
+    /// Usage for the turn. May arrive more than once as the backend refines it.
     Usage {
         turn: TurnId,
         usage: Usage,
+    },
+    /// Something the backend said that is not part of the conversation — a system or init
+    /// record, a line of stderr — escaped, for a log the user can open.
+    Diagnostic {
+        text: String,
     },
     TurnEnded {
         turn: TurnId,
         end: TurnEnd,
     },
-    /// The attachment ended. Nothing follows it on this sink.
+    /// The attachment ended. Nothing follows it on this sink, and the consent run is over.
     Exited {
         exit: Exit,
     },
@@ -329,21 +452,31 @@ pub trait EventSink: Send + Sync {
 pub enum BackendError {
     /// The binary, the loop or the endpoint could not be brought up.
     CannotStart(String),
+    /// The backend is not signed in for this account. The core does not sign in on its
+    /// behalf; the user does, through the backend's own flow (#41).
+    NotSignedIn,
     /// [`Capabilities`] said no.
     Unsupported(&'static str),
+    /// A turn is in progress and [`Capabilities::mid_turn_input`] is false.
+    Busy,
     /// The attachment has ended; see the [`Event::Exited`] that said so.
     Ended,
     /// The session id is another backend's or the backend does not know it.
     UnknownSession,
+    /// The channel to the process broke or carried something the backend could not parse.
+    Transport(String),
 }
 
 impl fmt::Display for BackendError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BackendError::CannotStart(why) => write!(f, "cannot start: {why}"),
+            BackendError::NotSignedIn => f.write_str("not signed in"),
             BackendError::Unsupported(what) => write!(f, "unsupported: {what}"),
+            BackendError::Busy => f.write_str("a turn is in progress"),
             BackendError::Ended => f.write_str("the attachment has ended"),
             BackendError::UnknownSession => f.write_str("unknown session"),
+            BackendError::Transport(why) => write!(f, "transport: {why}"),
         }
     }
 }
@@ -351,8 +484,8 @@ impl fmt::Display for BackendError {
 impl std::error::Error for BackendError {}
 
 /// What a backend needs to open a new session. The gate is here because approvals are the
-/// backend's to ask for and nobody else's; the caller hands it over and keeps no way to
-/// answer on the backend's behalf.
+/// backend's to ask for and nobody else's; the backend wraps it in an [`Attachment`] and
+/// the caller keeps no run id to ask under.
 pub struct Start {
     pub conversation: ConversationId,
     pub account: AccountId,
@@ -361,45 +494,44 @@ pub struct Start {
     pub events: Arc<dyn EventSink>,
 }
 
-/// What a backend needs to reattach to a stored session. The account is the session's;
-/// there is no field for another.
+/// What a backend needs to reattach to a stored session. The account and the workspace are
+/// the session's; there is no field for another.
 pub struct Resume {
     pub conversation: ConversationId,
     pub session: SessionId,
-    pub workspace_root: PathBuf,
     pub gate: Arc<Consent>,
     pub events: Arc<dyn EventSink>,
 }
 
 /// A backend: the thing that opens sessions. One value per backend kind, built in and
-/// static; this is not a plugin registry.
-pub trait RunBackend: Send + Sync {
-    /// For labels. The code above may show it and may not branch on it.
+/// static; sealed, so this is not a plugin registry.
+pub trait RunBackend: sealed::Sealed + Send + Sync {
+    /// For labels: the dialog title and the run list name the backend (#40 requires the
+    /// UI to show it). The code above may show it and may not branch on it.
     fn kind(&self) -> Backend;
 
     fn capabilities(&self) -> Capabilities;
 
-    /// Opens a new session under `start.account`. The first event on the sink is
-    /// [`Event::SessionOpened`].
+    /// Opens a new session under `start.account`. Returns once the attachment exists —
+    /// the process is up, the loop is built — which may be before the backend knows its
+    /// session id.
     fn start(&self, start: Start) -> Result<Box<dyn Session>, BackendError>;
 
-    /// Reattaches to `resume.session`, under the account it carries. Refused with
-    /// [`BackendError::Unsupported`] when [`Capabilities::resume`] is false, and with
+    /// Reattaches to `resume.session`, under the account and workspace it carries. Refused
+    /// with [`BackendError::Unsupported`] when [`Capabilities::resume`] is false, and with
     /// [`BackendError::UnknownSession`] when the id is not this backend's.
     fn resume(&self, resume: Resume) -> Result<Box<dyn Session>, BackendError>;
 }
 
-/// One attachment to one session. Dropping it without [`Session::terminate`] is a bug the
-/// backend may treat as terminate.
-pub trait Session: Send + Sync {
-    /// The consent run this attachment registered. Tokens minted under it die with the
-    /// attachment: a crashed process's pending approvals do not carry into the resumed one.
-    fn run(&self) -> RunId;
-
+/// One attachment to one session. Shared between the thread that drives the process and
+/// the caller, so every method takes `&self`; the backend holds the [`Attachment`] lease,
+/// and dropping the session ends the consent run whether or not `terminate` was called.
+pub trait Session: sealed::Sealed + Send + Sync {
     fn attachment(&self) -> AttachmentId;
 
     /// The user's own input. Starts a turn, or — when [`Capabilities::mid_turn_input`] —
-    /// joins the one in progress.
+    /// joins the one in progress; otherwise [`BackendError::Busy`]. The turn id is issued
+    /// here and [`Event::TurnStarted`] follows on the sink.
     fn send(&self, input: UserInput) -> Result<TurnId, BackendError>;
 
     /// An inbox message (#43). Returns once the message is [`Delivery::Enqueued`]; the
@@ -410,10 +542,11 @@ pub trait Session: Send + Sync {
     /// [`Capabilities::after_interrupt`]. A no-op when no turn is in progress.
     fn interrupt(&self) -> Result<(), BackendError>;
 
-    /// Ends the attachment. The last event on the sink is [`Event::Exited`] with
-    /// [`Exit::Terminated`]; the consent run is ended and its tokens are void.
-    fn terminate(self: Box<Self>);
+    /// Ends the attachment. Idempotent, and `Ok` once the request to end has been made;
+    /// the end itself is observed as [`Event::Exited`] with [`Exit::Terminated`], after
+    /// which the consent run is over.
+    fn terminate(&self) -> Result<(), BackendError>;
 
-    /// Usage so far, as the backend reports it.
+    /// Usage for the attachment so far, as the backend reports it.
     fn usage(&self) -> Usage;
 }
