@@ -6,23 +6,42 @@
 //! visible. Printable ASCII is shown as itself, a newline as a newline, `\` as `\\`, any
 //! other Unicode scalar as `\u{XXXX}`, and a byte that is not part of a valid UTF-8 sequence
 //! as `\x{HH}`. [`unescape`] inverts [`escape`] exactly, and the round trip is a test.
+//!
+//! A newline is shown as itself only where the whole body is one value. Where a body is a
+//! list of core-labelled lines, a value goes through [`escape_inline`], which shows a
+//! newline as `\u{A}`: otherwise a value containing one would end its own line and start
+//! another that reads as a label the core wrote.
 
 use std::fmt::Write as _;
 
 /// Renders bytes as displayable text. Nothing is dropped and nothing is summarised.
 pub fn escape(bytes: &[u8]) -> String {
+    escape_with(bytes, true)
+}
+
+/// [`escape`] for a value that shares its body with core-generated labels: a newline is
+/// shown as `\u{A}`, so the value cannot forge a line. [`unescape`] inverts this too.
+pub fn escape_inline(bytes: &[u8]) -> String {
+    escape_with(bytes, false)
+}
+
+fn escape_with(bytes: &[u8], raw_newline: bool) -> String {
     let mut out = String::with_capacity(bytes.len());
     let mut rest = bytes;
     while !rest.is_empty() {
         match std::str::from_utf8(rest) {
             Ok(s) => {
-                escape_str(s, &mut out);
+                escape_str(s, raw_newline, &mut out);
                 break;
             }
             Err(e) => {
                 let (valid, after) = rest.split_at(e.valid_up_to());
                 // `valid` is valid by construction.
-                escape_str(std::str::from_utf8(valid).unwrap_or(""), &mut out);
+                escape_str(
+                    std::str::from_utf8(valid).unwrap_or(""),
+                    raw_newline,
+                    &mut out,
+                );
                 let bad = e.error_len().unwrap_or(after.len());
                 for b in &after[..bad] {
                     let _ = write!(out, "\\x{{{b:02X}}}");
@@ -34,11 +53,11 @@ pub fn escape(bytes: &[u8]) -> String {
     out
 }
 
-fn escape_str(s: &str, out: &mut String) {
+fn escape_str(s: &str, raw_newline: bool, out: &mut String) {
     for c in s.chars() {
         match c {
             '\\' => out.push_str("\\\\"),
-            '\n' => out.push('\n'),
+            '\n' if raw_newline => out.push('\n'),
             ' '..='~' => out.push(c),
             _ => {
                 let _ = write!(out, "\\u{{{:X}}}", c as u32);
