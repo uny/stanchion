@@ -139,10 +139,10 @@ pub struct TurnId(u64);
 pub struct AttachmentId(u64);
 
 // The lease lives in its own module so that `RunEnded` has exactly one constructor:
-// `Attachment::end`. A backend in a sibling module cannot spell `RunEnded(())`.
+// `Attachment::end`. A backend in a sibling module cannot build one.
 mod lease {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Once};
 
     use super::{AttachmentId, Backend, Consent, RunId, TurnId};
 
@@ -167,7 +167,7 @@ mod lease {
         id: AttachmentId,
         run: RunId,
         gate: Arc<Consent>,
-        ended: AtomicBool,
+        ended: Once,
     }
 
     // As for `SessionId::new`: the callers are the backends, the first of which is #46.
@@ -178,7 +178,7 @@ mod lease {
                 id: AttachmentId(NEXT_ATTACHMENT.fetch_add(1, Ordering::SeqCst)),
                 run: gate.register_run(backend),
                 gate,
-                ended: AtomicBool::new(false),
+                ended: Once::new(),
             }
         }
 
@@ -204,17 +204,28 @@ mod lease {
         /// the proof [`Event::Exited`](super::Event::Exited) requires. Idempotent; `Drop`
         /// calls it too.
         pub(crate) fn end(&self) -> RunEnded {
-            if !self.ended.swap(true, Ordering::SeqCst) {
-                self.gate.end_run(self.run);
+            // `Once`, not a flag: a second caller blocks until the first has ended the run,
+            // so no proof is returned while the run is still live.
+            self.ended.call_once(|| self.gate.end_run(self.run));
+            RunEnded {
+                attachment: self.id,
             }
-            RunEnded(())
         }
     }
 
-    /// Proof that the attachment's consent run has ended. Only `Attachment::end` produces
-    /// one, and [`Event::Exited`](super::Event::Exited) cannot be built without it.
+    /// Proof that an attachment's consent run has ended. Only `Attachment::end` produces
+    /// one, and [`Event::Exited`](super::Event::Exited) cannot be built without it. It
+    /// names the attachment, so a proof from one cannot certify another's exit unnoticed.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct RunEnded(());
+    pub struct RunEnded {
+        attachment: AttachmentId,
+    }
+
+    impl RunEnded {
+        pub fn attachment(&self) -> AttachmentId {
+            self.attachment
+        }
+    }
 
     impl Drop for Attachment {
         fn drop(&mut self) {
@@ -470,7 +481,7 @@ pub enum Event {
         end: TurnEnd,
     },
     /// The attachment ended. Nothing follows it on this sink, and the consent run is over:
-    /// `ended` is the proof, and only the lease issues it.
+    /// `ended` is the proof, only the lease issues it, and it names this attachment.
     Exited {
         exit: Exit,
         ended: RunEnded,

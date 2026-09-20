@@ -174,9 +174,19 @@ impl Session for CliSession {
                 ),
             });
         }
-        let turn = self.lease.next_turn();
-        *self.open_turn.lock().unwrap() = Some(turn);
-        self.events.event(Event::TurnStarted { turn });
+        // Mid-turn input joins the turn in progress; otherwise a new one starts.
+        let turn = {
+            let mut open = self.open_turn.lock().unwrap();
+            match *open {
+                Some(turn) => turn,
+                None => {
+                    let turn = self.lease.next_turn();
+                    *open = Some(turn);
+                    self.events.event(Event::TurnStarted { turn });
+                    turn
+                }
+            }
+        };
         self.events.event(Event::MessagePartial {
             turn,
             text: "ok".into(),
@@ -455,6 +465,11 @@ fn drive(backend: &dyn RunBackend) -> Driven {
     session.terminate().expect("terminate");
     session.terminate().expect("terminate is idempotent");
     let attachment = session.attachment();
+    let exited = events.0.lock().unwrap().iter().find_map(|e| match e {
+        Event::Exited { ended, .. } => Some(ended.attachment()),
+        _ => None,
+    });
+    assert_eq!(exited, Some(attachment), "the proof names this attachment");
     drop(session);
     drop(gate);
     Driven {
@@ -737,8 +752,9 @@ fn send_is_refused_mid_turn_without_the_capability_and_after_the_end() {
 
     assert!(FakeCli.capabilities().mid_turn_input);
     let cli = FakeCli.start(start(&gate)).unwrap();
-    cli.send(input()).unwrap();
-    cli.send(input()).expect("a second input joins the turn");
+    let first = cli.send(input()).unwrap();
+    let second = cli.send(input()).expect("a second input joins the turn");
+    assert_eq!(first, second, "joined, not a new turn");
     cli.terminate().unwrap();
     assert_eq!(cli.send(input()).unwrap_err(), BackendError::Ended);
 }

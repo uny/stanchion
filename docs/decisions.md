@@ -750,8 +750,10 @@ as silent and fail-open, can be made to surface as `RanWithoutAsking` at all, or
 wider than the session's: `Consent::register_run` and `Consent::ask` are `pub` because the
 integration tests in `crates/core/tests` drive the gate directly, so a holder of the gate
 can open a run of its own and ask under it — a dialog labelled with a backend the shell
-chose. The session surface does not hand that out, but the gate does; narrowing both to
-the crate means moving those tests in-crate, and is a follow-up rather than this entry.
+chose — and, since run ids are the gate's own counter, name a backend's run through one
+registered on a second gate. The session surface does not hand any of that out, but the
+gate does; narrowing it to the crate means moving those tests in-crate, and is a follow-up
+rather than this entry.
 
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that
