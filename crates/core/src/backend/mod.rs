@@ -16,9 +16,14 @@
 //! [`crate::execute::CliApproval::resolve`], which owes the CLI exactly one reply. Upward
 //! it emits [`Event::ApprovalRequested`] for display, and nothing on [`Session`] takes an
 //! answer or hands out the consent run id, so the code above — the shell, the WebView
-//! behind it — has no handle by which to approve or to ask the gate in the backend's
-//! name. `crates/core/src/lib.rs` pins the first with a `compile_fail` doctest beside the
-//! token ones; the second is the [`Attachment`] lease, which only this crate constructs.
+//! behind it — has no handle on a session by which to approve, or by which to ask the
+//! gate under the backend's run. `crates/core/src/lib.rs` shows the shape of the method
+//! that does not exist in a `compile_fail` doctest beside the token ones (a doctest can
+//! pin one name, not the absence of a capability; the trait is the pin); the run id is
+//! held by the [`Attachment`] lease, which only this crate constructs. What this does
+//! *not* close: [`Consent::register_run`] and [`Consent::ask`] are `pub` for the
+//! integration tests, so a holder of the gate can still open a run of its own and ask
+//! under it. Narrowing them to the crate is a follow-up that moves those tests in-crate.
 //!
 //! **A runtime.** Events reach the caller through an [`EventSink`] it supplies, on whatever
 //! thread the backend delivers from, as the presenter does for consent. Whether a backend

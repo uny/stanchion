@@ -675,8 +675,8 @@ Claude Code slice (#46) cannot be cut without that.
 **The contract is seven types, and the one thing it does not carry is an approval.** A
 backend receives the consent gate at `start` and asks it itself; nothing on the session
 trait takes an answer or hands out the consent run id, so the code above — the shell, and
-the WebView behind it — has no handle by which to approve, and none by which to ask the
-gate in the backend's name and redeem what it mints. This is the consent entry's rule seen
+the WebView behind it — has nothing on a session by which to approve, and nothing by which
+to ask the gate under the backend's run. This is the consent entry's rule seen
 from the other side: a `resolve(decision)` on the backend trait would be
 `approve(tool_call_id)` under another name, and the fact that it is the *shell* calling it
 rather than the WebView is no defence, since the shell's commands are what the WebView
@@ -746,7 +746,12 @@ likewise not decided here: the contract delivers events through a sink the calle
 as the presenter does, and a threaded and an executor-driven implementation both fit; the
 Claude Code slice decides for itself and says why. Whether hook failure, which #42 measured
 as silent and fail-open, can be made to surface as `RanWithoutAsking` at all, or only as a
-`--debug` log the core tails, is the same slice's to measure.
+`--debug` log the core tails, is the same slice's to measure. And the gate's own surface is
+wider than the session's: `Consent::register_run` and `Consent::ask` are `pub` because the
+integration tests in `crates/core/tests` drive the gate directly, so a holder of the gate
+can open a run of its own and ask under it — a dialog labelled with a backend the shell
+chose. The session surface does not hand that out, but the gate does; narrowing both to
+the crate means moving those tests in-crate, and is a follow-up rather than this entry.
 
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that

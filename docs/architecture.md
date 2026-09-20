@@ -83,9 +83,12 @@ ships, not a plugin surface. Seven items, each a type:
    `start`, wraps it in an `Attachment` lease that registers the consent run, and asks the
    gate itself (on a CLI backend through `CliApproval::resolve`, which owes the CLI exactly
    one reply). Nothing on `Session` takes an answer or exposes the run id, so the code above
-   can neither answer nor ask in the backend's name; `src/lib.rs` pins the first with a
-   `compile_fail` doctest beside the token ones, and the lease's constructor is
-   crate-private. The resolution is the gate's, as "An IPC message is not consent" already
+   has nothing on a session by which to answer, or to ask under the backend's run;
+   `src/lib.rs` shows the missing method's shape in a `compile_fail` doctest beside the
+   token ones, and the lease's constructor is crate-private. Not closed by this: the gate's
+   `register_run` and `ask` are `pub` for the integration tests, so a holder of the gate
+   can open a run of its own and ask under it — narrowing them to the crate is a follow-up.
+   The resolution is the gate's, as "An IPC message is not consent" already
    requires — a `resolve(decision)` on the backend trait would be `approve(tool_call_id)`
    under another name.
 5. **`deliver`** — an inbox message (#43) enters the backend, and *enqueued*, *accepted*
