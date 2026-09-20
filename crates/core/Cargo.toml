@@ -6,8 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-# Deliberately empty, and `tauri` in particular must never appear here. See the crate docs.
-# CI enforces the `tauri` half of that: `.github/workflows/build.yml` fails the build if
-# `cargo tree` finds the edge under any target or feature combination. Dev-dependencies are
-# outside that check; everything below this line is inside it.
+# `tauri` must never appear here, and neither may anything that implies a WebView. See the
+# crate docs. CI enforces the `tauri` half of that: `.github/workflows/build.yml` fails the
+# build if `cargo tree` finds the edge under any target or feature combination.
+# Dev-dependencies are outside that check; everything below this line is inside it.
 [dependencies]
+# Content and prior-file hashes bound into a consent token (`consent::request`). A
+# non-cryptographic hash would let a write be substituted for one with a colliding digest.
+sha2 = "0.10"

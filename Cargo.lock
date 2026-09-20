@@ -2899,6 +2899,9 @@ dependencies = [
 [[package]]
 name = "stanchion-core"
 version = "0.0.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "string_cache"
