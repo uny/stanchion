@@ -247,9 +247,10 @@ impl Session for CliSession {
 
     fn terminate(&self) -> Result<(), BackendError> {
         if !std::mem::replace(&mut *self.ended.lock().unwrap(), true) {
-            self.lease.end();
+            let ended = self.lease.end();
             self.events.event(Event::Exited {
                 exit: Exit::Terminated,
+                ended,
             });
         }
         Ok(())
@@ -398,9 +399,10 @@ impl Session for NativeSession {
 
     fn terminate(&self) -> Result<(), BackendError> {
         if !std::mem::replace(&mut *self.exited.lock().unwrap(), true) {
-            self.lease.end();
+            let ended = self.lease.end();
             self.events.event(Event::Exited {
                 exit: Exit::Terminated,
+                ended,
             });
         }
         Ok(())
@@ -683,13 +685,13 @@ fn the_lease_ends_the_consent_run_on_terminate_and_on_drop() {
                 events: Arc::new(Recorder::default()),
             })
             .unwrap();
-        // Reach the run id the way only this crate can: through a request bound to it.
-        // The public surface exposes no `RunId`, so the test reads the lease's effect —
-        // a request under the run is refused after it ends — via a fresh lease.
-        let probe = Attachment::open(gate.clone(), Backend::ClaudeCode);
-        let live_before = gate
-            .ask(RequestSpec {
-                run: Some(probe.run()),
+        // The session exposes no `RunId`; in-crate, the gate is fresh and `start` registered
+        // its one run first, so this is the lease's run. Read the lease's effect through it:
+        // a request under the run is refused only once the run has ended.
+        let run = RunId(1);
+        let ask = || {
+            gate.ask(RequestSpec {
+                run: Some(run),
                 workspace_root: ws(),
                 class: ClassSpec::CliCommand {
                     cli_request_id: "p".into(),
@@ -698,29 +700,18 @@ fn the_lease_ends_the_consent_run_on_terminate_and_on_drop() {
                     session_grant: false,
                 },
             })
-            .err();
+            .err()
+        };
         assert!(!matches!(
-            live_before,
+            ask(),
             Some(crate::consent::policy::Refusal::UnknownRun)
         ));
         if terminate {
+            // Ended by `terminate` alone, while the session value is still held.
             session.terminate().unwrap();
+            assert_eq!(ask(), Some(crate::consent::policy::Refusal::UnknownRun));
         }
         drop(session);
-        drop(probe);
-        // Both leases are gone; a request under either is `UnknownRun`.
-        let after = gate
-            .ask(RequestSpec {
-                run: Some(RunId(1)),
-                workspace_root: ws(),
-                class: ClassSpec::CliCommand {
-                    cli_request_id: "p".into(),
-                    command: "ls".into(),
-                    cwd: ws(),
-                    session_grant: false,
-                },
-            })
-            .err();
-        assert_eq!(after, Some(crate::consent::policy::Refusal::UnknownRun));
+        assert_eq!(ask(), Some(crate::consent::policy::Refusal::UnknownRun));
     }
 }

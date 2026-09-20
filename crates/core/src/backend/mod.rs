@@ -27,7 +27,6 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::consent::presenter::Rendered;
@@ -127,70 +126,92 @@ pub struct TurnId(u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AttachmentId(u64);
 
-// Process-wide counters for identity only — never configuration, which the run-is-a-value
-// entry keeps out of process-wide state. The consent gate numbers its runs per gate; these
-// number turns and attachments per process, so the scopes differ and neither reads the other.
-#[cfg_attr(not(test), allow(dead_code))]
-static NEXT_TURN: AtomicU64 = AtomicU64::new(1);
-#[cfg_attr(not(test), allow(dead_code))]
-static NEXT_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
+// The lease lives in its own module so that `RunEnded` has exactly one constructor:
+// `Attachment::end`. A backend in a sibling module cannot spell `RunEnded(())`.
+mod lease {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
 
-/// The lease a backend holds on the consent gate for one attachment. Registers the consent
-/// run when opened and ends it when dropped, so the run cannot outlive the attachment
-/// whatever path ended it — `terminate`, a crash, or the session being dropped. The run id
-/// is not exposed: a backend asks the gate through [`Attachment::run`] from inside this
-/// crate, and the code above has no way to ask in its name.
-pub struct Attachment {
-    id: AttachmentId,
-    run: RunId,
-    gate: Arc<Consent>,
-    ended: AtomicBool,
-}
+    use super::{AttachmentId, Backend, Consent, RunId, TurnId};
 
-// As for `SessionId::new`: the callers are the backends, the first of which is #46.
-#[cfg_attr(not(test), allow(dead_code))]
-impl Attachment {
-    pub(crate) fn open(gate: Arc<Consent>, backend: Backend) -> Self {
-        Attachment {
-            id: AttachmentId(NEXT_ATTACHMENT.fetch_add(1, Ordering::SeqCst)),
-            run: gate.register_run(backend),
-            gate,
-            ended: AtomicBool::new(false),
+    // Process-wide counters for identity only — never configuration, which the
+    // run-is-a-value entry keeps out of process-wide state. The consent gate numbers its
+    // runs per gate; these number turns and attachments per process, so the scopes differ
+    // and neither reads the other.
+    #[cfg_attr(not(test), allow(dead_code))]
+    static NEXT_TURN: AtomicU64 = AtomicU64::new(1);
+    #[cfg_attr(not(test), allow(dead_code))]
+    static NEXT_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
+
+    /// The lease a backend holds on the consent gate for one attachment. Registers the
+    /// consent run when opened and ends it when dropped, so the run cannot outlive the
+    /// session value that holds it. Before that, the run ends when the attachment does:
+    /// [`Event::Exited`](super::Event::Exited) carries a [`RunEnded`] that only
+    /// `Attachment::end` produces, so a backend cannot report the attachment over — on
+    /// `terminate`, on a crash, on the process finishing — without having ended the run
+    /// first. The run id is not exposed: a backend asks the gate through
+    /// `Attachment::run` from inside this crate.
+    pub struct Attachment {
+        id: AttachmentId,
+        run: RunId,
+        gate: Arc<Consent>,
+        ended: AtomicBool,
+    }
+
+    // As for `SessionId::new`: the callers are the backends, the first of which is #46.
+    #[cfg_attr(not(test), allow(dead_code))]
+    impl Attachment {
+        pub(crate) fn open(gate: Arc<Consent>, backend: Backend) -> Self {
+            Attachment {
+                id: AttachmentId(NEXT_ATTACHMENT.fetch_add(1, Ordering::SeqCst)),
+                run: gate.register_run(backend),
+                gate,
+                ended: AtomicBool::new(false),
+            }
+        }
+
+        pub fn id(&self) -> AttachmentId {
+            self.id
+        }
+
+        /// The consent run to bind requests to. Crate-private on purpose.
+        pub(crate) fn run(&self) -> RunId {
+            self.run
+        }
+
+        pub(crate) fn gate(&self) -> &Consent {
+            &self.gate
+        }
+
+        /// Allocates the next turn id.
+        pub(crate) fn next_turn(&self) -> TurnId {
+            TurnId(NEXT_TURN.fetch_add(1, Ordering::SeqCst))
+        }
+
+        /// Ends the consent run now — pending requests withdrawn, tokens void — and returns
+        /// the proof [`Event::Exited`](super::Event::Exited) requires. Idempotent; `Drop`
+        /// calls it too.
+        pub(crate) fn end(&self) -> RunEnded {
+            if !self.ended.swap(true, Ordering::SeqCst) {
+                self.gate.end_run(self.run);
+            }
+            RunEnded(())
         }
     }
 
-    pub fn id(&self) -> AttachmentId {
-        self.id
-    }
+    /// Proof that the attachment's consent run has ended. Only `Attachment::end` produces
+    /// one, and [`Event::Exited`](super::Event::Exited) cannot be built without it.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct RunEnded(());
 
-    /// The consent run to bind requests to. Crate-private on purpose.
-    pub(crate) fn run(&self) -> RunId {
-        self.run
-    }
-
-    pub(crate) fn gate(&self) -> &Consent {
-        &self.gate
-    }
-
-    /// Allocates the next turn id.
-    pub(crate) fn next_turn(&self) -> TurnId {
-        TurnId(NEXT_TURN.fetch_add(1, Ordering::SeqCst))
-    }
-
-    /// Ends the consent run now — pending requests withdrawn, tokens void. Idempotent;
-    /// `Drop` calls it too.
-    pub(crate) fn end(&self) {
-        if !self.ended.swap(true, Ordering::SeqCst) {
-            self.gate.end_run(self.run);
+    impl Drop for Attachment {
+        fn drop(&mut self) {
+            self.end();
         }
     }
 }
 
-impl Drop for Attachment {
-    fn drop(&mut self) {
-        self.end();
-    }
-}
+pub use lease::{Attachment, RunEnded};
 
 // ---------------------------------------------------------------------------------------
 // Capabilities
@@ -436,9 +457,11 @@ pub enum Event {
         turn: TurnId,
         end: TurnEnd,
     },
-    /// The attachment ended. Nothing follows it on this sink, and the consent run is over.
+    /// The attachment ended. Nothing follows it on this sink, and the consent run is over:
+    /// `ended` is the proof, and only the lease issues it.
     Exited {
         exit: Exit,
+        ended: RunEnded,
     },
 }
 
@@ -530,7 +553,8 @@ pub trait RunBackend: sealed::Sealed + Send + Sync {
 
 /// One attachment to one session. Shared between the thread that drives the process and
 /// the caller, so every method takes `&self`; the backend holds the [`Attachment`] lease,
-/// and dropping the session ends the consent run whether or not `terminate` was called.
+/// ends it before it reports [`Event::Exited`], and dropping the session ends it whether
+/// or not anything was reported.
 pub trait Session: sealed::Sealed + Send + Sync {
     fn attachment(&self) -> AttachmentId;
 
@@ -548,8 +572,8 @@ pub trait Session: sealed::Sealed + Send + Sync {
     fn interrupt(&self) -> Result<(), BackendError>;
 
     /// Ends the attachment. Idempotent, and `Ok` once the request to end has been made;
-    /// the end itself is observed as [`Event::Exited`] with [`Exit::Terminated`], after
-    /// which the consent run is over.
+    /// the end itself is observed as [`Event::Exited`] with [`Exit::Terminated`], which
+    /// the backend can only emit once the consent run is over.
     fn terminate(&self) -> Result<(), BackendError>;
 
     /// Usage for the attachment so far, as the backend reports it.
