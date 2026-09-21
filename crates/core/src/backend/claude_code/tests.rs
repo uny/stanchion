@@ -458,6 +458,30 @@ fn busy_while_a_turn_is_open_and_the_inbox_waits_for_it() {
 }
 
 #[test]
+fn a_result_without_a_denial_list_claims_nothing() {
+    let dirs = Dirs::new("no-denials");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs).env("FAKE_CLAUDE_NO_DENIALS", "1");
+    let session = start(&backend, &dirs, &events);
+    session.send(UserInput { text: "hi".into() }).unwrap();
+    let got = events.wait_for("TurnEnded", is_turn_ended);
+    assert!(got.iter().any(|e| matches!(e, Event::ToolCall { .. })));
+    assert!(!got
+        .iter()
+        .any(|e| matches!(e, Event::RanWithoutAsking { .. })));
+    assert!(got.contains(&Event::Diagnostic {
+        text: "result without permission_denials: 2 call(s) not reported either way".into()
+    }));
+    assert!(matches!(
+        got.last(),
+        Some(Event::TurnEnded {
+            end: TurnEnd::Completed,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn not_signed_in_surfaces_on_the_first_turn() {
     let dirs = Dirs::new("not-logged-in");
     let events = Arc::new(Recorder::default());

@@ -792,23 +792,38 @@ impl Shared {
         // Nothing reached the gate in this slice, so a call the CLI did not refuse by its
         // own rules is a call that ran without asking — on a turn that ran to its end.
         // An interrupted turn's last call may have been cut before it ran (#42: the CLI
-        // closes it with a synthetic rejection), so nothing is claimed for that turn.
-        let denied: Vec<&str> = value
+        // closes it with a synthetic rejection), so nothing is claimed for that turn;
+        // nor for one whose `result` carries no denial list at all (a CLI that stopped
+        // reporting it), since the claim would then be a guess about every call.
+        let denied: Option<Vec<&str>> = value
             .get("permission_denials")
             .and_then(Value::as_array)
-            .unwrap_or(&[])
-            .iter()
-            .filter_map(|d| d.get("tool_use_id").and_then(Value::as_str))
-            .collect();
-        for (call, name, arguments) in turn.calls {
-            if !turn.interrupting && !denied.contains(&call.0.as_str()) {
-                out.push(Event::RanWithoutAsking {
-                    turn: turn.id,
-                    call,
-                    name,
-                    arguments,
-                });
+            .map(|denials| {
+                denials
+                    .iter()
+                    .filter_map(|d| d.get("tool_use_id").and_then(Value::as_str))
+                    .collect()
+            });
+        match &denied {
+            Some(denied) => {
+                for (call, name, arguments) in turn.calls {
+                    if !turn.interrupting && !denied.contains(&call.0.as_str()) {
+                        out.push(Event::RanWithoutAsking {
+                            turn: turn.id,
+                            call,
+                            name,
+                            arguments,
+                        });
+                    }
+                }
             }
+            None if !turn.calls.is_empty() => out.push(Event::Diagnostic {
+                text: format!(
+                    "result without permission_denials: {} call(s) not reported either way",
+                    turn.calls.len()
+                ),
+            }),
+            None => {}
         }
 
         let end = if turn.interrupting {

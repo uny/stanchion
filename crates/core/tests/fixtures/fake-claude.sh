@@ -11,6 +11,7 @@
 #   FAKE_CLAUDE_NOT_LOGGED_IN=1 answer the first input as an unauthenticated CLI does
 #   FAKE_CLAUDE_CRASH_AFTER=N  die by SIGKILL after the N-th result line
 #   FAKE_CLAUDE_EXIT_AFTER=N   exit 3 after the N-th result line
+#   FAKE_CLAUDE_NO_DENIALS=1   omit `permission_denials` from the result line
 #   FAKE_CLAUDE_STDERR=text    write `text` to stderr at startup
 #   FAKE_CLAUDE_STATE=path     append one line per event to `path` (what it received)
 #
@@ -93,7 +94,11 @@ while IFS= read -r line; do
       printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}'
       printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"thinking","thinking":"hmm","signature":"AAAA"},{"type":"text","text":"pong"},{"type":"tool_use","id":"toolu_ran","name":"Read","input":{"file_path":"a.txt"}},{"type":"tool_use","id":"toolu_denied","name":"Bash","input":{"command":"rm -rf /"}}]}}'
       printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_ran","content":"hello\n<b>","is_error":false},{"type":"tool_result","tool_use_id":"toolu_denied","content":[{"type":"text","text":"Permission to use Bash has been denied."}],"is_error":true}]}}'
-      emit_result '{"type":"result","subtype":"success","is_error":false,"session_id":"'"$SESSION"'","total_cost_usd":0.0125,"usage":{"input_tokens":10,"output_tokens":5},"permission_denials":[{"tool_name":"Bash","tool_use_id":"toolu_denied","tool_input":{"command":"rm -rf /"}}]}'
+      denials=',"permission_denials":[{"tool_name":"Bash","tool_use_id":"toolu_denied","tool_input":{"command":"rm -rf /"}}]'
+      if [ "${FAKE_CLAUDE_NO_DENIALS:-0}" = "1" ]; then
+        denials=''
+      fi
+      emit_result '{"type":"result","subtype":"success","is_error":false,"session_id":"'"$SESSION"'","total_cost_usd":0.0125,"usage":{"input_tokens":10,"output_tokens":5}'"$denials"'}'
       ;;
     *)
       note "other:$line"
