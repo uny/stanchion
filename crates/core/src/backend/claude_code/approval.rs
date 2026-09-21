@@ -30,6 +30,10 @@
 //!   setting the model can reach, and not one this backend inherits either.
 //! - `--mcp-config` accepts the configuration as a JSON string on the command line, and
 //!   `--strict-mcp-config` makes it the only MCP server the CLI loads.
+//! - A reply that took 90 seconds — a user looking at the dialog — was still acted on:
+//!   the call ran. Whether the CLI gives up on a tool call after some longer wait is not
+//!   measured; if it does, the call is denied (fail-closed, as above) and the dialog's
+//!   answer, when it comes, reaches a call the CLI has closed.
 //!
 //! # What the request cannot say
 //!
