@@ -31,6 +31,15 @@
 //! - `--mcp-config` accepts the configuration as a JSON string on the command line, and
 //!   `--strict-mcp-config` makes it the only MCP server the CLI loads.
 //!
+//! # What the request cannot say
+//!
+//! The rendered `cwd` is the workspace root the attachment was started in. The CLI's
+//! `Bash` keeps a working directory across calls, so after a `cd` the command runs
+//! elsewhere; the request carries no cwd, and the dialog says the one the core knows.
+//! And [`Event::ToolCall`] comes from the reading thread while
+//! [`Event::ApprovalRequested`] comes from a handler thread, so for one call the two may
+//! arrive in either order; the contract promises none.
+//!
 //! # Threads and locks
 //!
 //! One thread accepts connections for the life of the attachment; each request is
@@ -39,7 +48,9 @@
 //! `state`, as every emitter does, and holds neither while it waits on the gate. Once the
 //! attachment has ended nothing is emitted: `Exited` stays the last event, and a request
 //! still pending at that moment is withdrawn by the lease's end, answered *deny*, and
-//! reported nowhere but the CLI.
+//! reported nowhere but the CLI. A request still pending when its *turn* ends — an
+//! interrupt cut the call, or the CLI closed it on its own — is cancelled by `on_result`,
+//! and the deny it produces reaches a CLI that has already moved on.
 
 use std::collections::HashSet;
 use std::io::{self, BufReader, Write};
@@ -48,6 +59,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use super::json::Value;
 use super::{create_private_dir, read_bounded_line, Shared};
@@ -62,6 +74,8 @@ use crate::execute::{CliApproval, Reply, ReplyTransport};
 pub(super) const SERVER_NAME: &str = "stanchion";
 /// The tool as `--permission-prompt-tool` names it: `mcp__<server>__<tool>`.
 pub(super) const PROMPT_TOOL: &str = "mcp__stanchion__approve";
+/// How long an accepted connection has to send its request line.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The directory the per-attachment sockets live in. Created by the core with mode 0700
 /// and resolved, like [`super::ConfigRoot`]. A socket path is short on every platform
@@ -92,9 +106,13 @@ pub(super) struct Listener {
 
 impl Listener {
     pub(super) fn bind(dir: &SocketDir, attachment: AttachmentId) -> Result<Self, BackendError> {
-        let path = dir.0.join(format!("{}.sock", attachment.raw()));
-        // A stale socket under this name is one a previous process of the core left; the
-        // ids restart with the process, and nothing else creates files here.
+        // Named by process and attachment: two processes of the core sharing a directory
+        // — two instances of the application, or a test run beside one — must not unlink
+        // each other's live socket. A file already under this name is a stale one that a
+        // dead process with this pid left; nothing else creates files here.
+        let path = dir
+            .0
+            .join(format!("{}-{}.sock", std::process::id(), attachment.raw()));
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)
             .map_err(|e| BackendError::CannotStart(format!("bind {}: {e}", path.display())))?;
@@ -221,6 +239,9 @@ impl Shared {
 
     /// One request: read it, answer it, report it.
     fn handle_approval(&self, stream: UnixStream) {
+        // The helper writes its line as soon as it has connected; a connection that
+        // sends nothing must not pin this thread, and the attachment with it, for good.
+        let _ = stream.set_read_timeout(Some(REQUEST_TIMEOUT));
         let mut reply = SocketReply {
             stream: &stream,
             error: None,
@@ -229,11 +250,11 @@ impl Shared {
             Some(Ok(line)) => line,
             Some(Err(over)) => {
                 self.deny_at_the_door(&mut reply, AtTheDoor::Malformed("line too long"));
-                self.diagnostic(format!("approval request dropped: {over}"));
+                self.diagnostic_if_live(format!("approval request dropped: {over}"));
                 return;
             }
             None => {
-                self.diagnostic("approval connection closed before a request".into());
+                self.diagnostic_if_live("approval connection closed before a request".into());
                 return;
             }
         };
@@ -242,7 +263,7 @@ impl Shared {
             Ok(v) => v,
             Err(e) => {
                 self.deny_at_the_door(&mut reply, AtTheDoor::Malformed("not JSON"));
-                self.diagnostic(format!(
+                self.diagnostic_if_live(format!(
                     "approval request unparsable ({e}): {}",
                     escape_inline(&line)
                 ));
@@ -256,7 +277,7 @@ impl Shared {
                 &mut reply,
                 AtTheDoor::Malformed("tool_name or tool_use_id missing"),
             );
-            self.diagnostic(format!(
+            self.diagnostic_if_live(format!(
                 "approval request without tool_name or tool_use_id: {}",
                 escape_inline(&line)
             ));
@@ -281,7 +302,7 @@ impl Shared {
                 None => {
                     drop(state);
                     self.deny_at_the_door(&mut reply, AtTheDoor::OutsideATurn);
-                    self.diagnostic(format!(
+                    self.diagnostic_if_live(format!(
                         "approval request for {shown_name} ({}) outside a turn",
                         escape_inline(id.as_bytes())
                     ));
@@ -290,7 +311,7 @@ impl Shared {
             }
         };
         if request.get("permission_suggestions").is_some() {
-            self.diagnostic(format!(
+            self.diagnostic_if_live(format!(
                 "approval request for {shown_name} ({}) carried permission_suggestions; \
                  ignored — the reply never widens",
                 escape_inline(id.as_bytes())
@@ -305,7 +326,7 @@ impl Shared {
                 .and_then(Value::as_str)
         } else {
             self.deny_at_the_door(&mut reply, AtTheDoor::NotApprovable(name.to_string()));
-            self.diagnostic(format!(
+            self.diagnostic_if_live(format!(
                 "approval request for {shown_name} ({}) denied at the door: only Bash \
                  reaches the gate in this slice",
                 escape_inline(id.as_bytes())
@@ -317,7 +338,7 @@ impl Shared {
                 &mut reply,
                 AtTheDoor::Malformed("Bash input without a command"),
             );
-            self.diagnostic(format!(
+            self.diagnostic_if_live(format!(
                 "approval request for Bash ({}) without a command",
                 escape_inline(id.as_bytes())
             ));
@@ -342,6 +363,13 @@ impl Shared {
             &mut reply,
             &mut |rendered: &Rendered| {
                 invocation = Some(rendered.invocation);
+                // Recorded on the turn so that the turn's end cancels it: a dialog for a
+                // call the CLI has already closed must not be answered into nothing.
+                if let Some(open) = self.state.lock().unwrap().turn.as_mut() {
+                    if open.id == turn {
+                        open.pending.push(rendered.invocation);
+                    }
+                }
                 self.emit_if_live(Event::ApprovalRequested {
                     turn,
                     call: call.clone(),
@@ -350,8 +378,13 @@ impl Shared {
                 });
             },
         );
+        if let Some(invocation) = invocation {
+            if let Some(open) = self.state.lock().unwrap().turn.as_mut() {
+                open.pending.retain(|i| *i != invocation);
+            }
+        }
         if let Some(e) = reply.error.take() {
-            self.diagnostic(format!(
+            self.diagnostic_if_live(format!(
                 "approval reply for {} could not be written: {e}",
                 escape_inline(id.as_bytes())
             ));
@@ -366,7 +399,7 @@ impl Shared {
             // Refused before a dialog: the CLI has its deny; the log has why.
             None => {
                 if let Err(refusal) = outcome {
-                    self.diagnostic(format!(
+                    self.diagnostic_if_live(format!(
                         "approval request for {shown_name} ({}) refused: {refusal}",
                         escape_inline(id.as_bytes())
                     ));
@@ -387,7 +420,13 @@ impl Shared {
         reply.write(&deny_value(&message));
     }
 
-    /// Emits unless the attachment has ended, so `Exited` stays the last event.
+    fn diagnostic_if_live(&self, text: String) {
+        self.emit_if_live(Event::Diagnostic { text });
+    }
+
+    /// Emits unless the attachment has ended, so `Exited` stays the last event. Every
+    /// emission from a handler thread goes through here: the reader's `finish` has no
+    /// handler to join, and a request the run's end withdrew resolves after `Exited`.
     fn emit_if_live(&self, event: Event) {
         let _emit = self.emit.lock().unwrap();
         if self.state.lock().unwrap().ended {

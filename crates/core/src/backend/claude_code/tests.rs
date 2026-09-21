@@ -1065,8 +1065,11 @@ fn start_with(
 }
 
 fn socket_of(dirs: &Dirs, session: &dyn Session) -> PathBuf {
-    dirs.sockets
-        .join(format!("{}.sock", session.attachment().raw()))
+    dirs.sockets.join(format!(
+        "{}-{}.sock",
+        std::process::id(),
+        session.attachment().raw()
+    ))
 }
 
 /// Connects as the helper would and asks; returns the reply line.
@@ -1314,6 +1317,47 @@ fn the_attachments_end_withdraws_a_pending_request_and_unlinks_the_socket() {
     assert!(is_exited(after.last().unwrap()));
     assert!(!socket.exists());
     assert!(UnixStream::connect(&socket).is_err());
+    drop(holds);
+}
+
+#[test]
+fn the_turns_end_cancels_a_request_still_pending_for_it() {
+    let dirs = Dirs::new("turn-cancel");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs).env(
+        "FAKE_CLAUDE_HOLD",
+        dirs.base.join("release").to_str().unwrap(),
+    );
+    let holds = Arc::new(Holds::default());
+    let session = start_with(&backend, &dirs, &events, gate_with(holds.clone()));
+    let (turn, hold) = held_turn(&dirs, session.as_ref(), &events);
+    let socket = socket_of(&dirs, session.as_ref());
+
+    let asker = thread::spawn(move || ask(&socket, &bash_request("toolu_denied", "rm -rf /")));
+    events.wait_for("ApprovalRequested", |e| {
+        matches!(e, Event::ApprovalRequested { .. })
+    });
+
+    // The CLI closes the call on its own (here: the fake's result line) while the dialog
+    // is still up: the dialog is dismissed, the request is withdrawn, the CLI gets its
+    // deny for a call it has already moved past.
+    release(&hold);
+    let all = events.wait_for("ApprovalResolved", |e| {
+        matches!(e, Event::ApprovalResolved { .. })
+    });
+    assert_eq!(
+        asker.join().unwrap(),
+        r#"{"behavior":"deny","message":"stanchion: refused: request withdrawn"}"#
+    );
+    assert_eq!(holds.dismissed.load(Ordering::SeqCst), 1);
+    assert!(all.iter().any(|e| matches!(
+        e,
+        Event::ApprovalResolved { turn: t, allowed: false, .. } if *t == turn
+    )));
+    // Asked, so not "without asking" — whatever the CLI did with it.
+    assert!(!all
+        .iter()
+        .any(|e| matches!(e, Event::RanWithoutAsking { call, .. } if call.0 == "toolu_denied")));
     drop(holds);
 }
 

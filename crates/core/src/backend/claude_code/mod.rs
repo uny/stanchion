@@ -85,6 +85,7 @@ use super::{
     SessionId, Start, ToolCallId, TurnEnd, TurnId, Usage, UserInput,
 };
 use crate::consent::render::{escape, escape_inline};
+use crate::consent::request::InvocationId;
 
 mod approval;
 pub mod json;
@@ -351,6 +352,7 @@ impl ClaudeCode {
                 terminated: false,
                 ended: false,
                 totals: None,
+                to_cancel: Vec::new(),
             }),
         });
         thread::spawn({
@@ -455,6 +457,8 @@ struct OpenTurn {
     calls: Vec<(ToolCallId, String, String)>,
     /// Calls whose approval request reached the socket, whichever way it was answered.
     asked: Asked,
+    /// Gate requests opened for this turn and not yet resolved; cancelled at its end.
+    pending: Vec<InvocationId>,
     interrupting: bool,
 }
 
@@ -469,6 +473,9 @@ struct State {
     ended: bool,
     /// Totals over the turns that reported usage; `None` until one has.
     totals: Option<(u64, u64, Option<u64>)>,
+    /// Gate requests a turn's end left behind, cancelled once `state` is released:
+    /// `cancel` dismisses a dialog, which is the shell's code.
+    to_cancel: Vec<InvocationId>,
 }
 
 struct Shared {
@@ -546,6 +553,7 @@ impl Shared {
             id: turn,
             calls: Vec::new(),
             asked: Asked::new(),
+            pending: Vec::new(),
             interrupting: false,
         });
         out.push(Event::TurnStarted { turn });
@@ -611,6 +619,11 @@ impl Shared {
                         escape_inline(other.unwrap_or("(none)").as_bytes())
                     ),
                 }),
+            }
+            let to_cancel = std::mem::take(&mut state.to_cancel);
+            drop(state);
+            for invocation in to_cancel {
+                self.lease.gate().cancel(invocation);
             }
         }
         self.deliver_pending(out);
@@ -822,6 +835,8 @@ impl Shared {
             });
             return;
         };
+        // A dialog still open for this turn is for a call the CLI has closed.
+        state.to_cancel.extend(turn.pending.iter().copied());
         let usage = value.get("usage");
         let input = usage
             .and_then(|u| u.get("input_tokens"))
