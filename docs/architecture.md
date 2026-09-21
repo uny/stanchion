@@ -129,8 +129,9 @@ reactor with. The core creates `<config root>/<account>` mode 0700 before the sp
 passes it as `CLAUDE_CONFIG_DIR`, never reads it, and refuses a workspace root that
 overlaps the config root in either direction after resolving both (#41's "config dir
 inside the workspace root fails" test lives there); `--setting-sources user` keeps a
-workspace's own `.claude/` out of the CLI's settings (#42). Stream-json lines map to
-events one to one, through a small read-only JSON parser of the crate's own — the core
+workspace's own `.claude/` out of the CLI's settings (#42). Each stream-json line
+the backend reads maps to events on its own, with the CLI's per-second progress records
+dropped, through a small read-only JSON parser of the crate's own — the core
 links no serialisation library, by the rule in `crates/core/src/lib.rs`. What the module
 measured beyond #42, signed in and not: `system/init` arrives after an input, not at
 startup, and repeats every turn; a process outlives its `result` lines until stdin

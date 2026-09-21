@@ -60,6 +60,7 @@ while IFS= read -r line; do
   case "$line" in
     *'"subtype":"interrupt"'*)
       note "interrupt"
+      printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"1"}}'
       emit_result '{"type":"result","subtype":"success","is_error":false,"session_id":"'"$SESSION"'","total_cost_usd":0.001,"usage":{"input_tokens":3,"output_tokens":1},"permission_denials":[]}'
       ;;
     *'"type":"user"'*)
@@ -73,8 +74,10 @@ while IFS= read -r line; do
       fi
       case "$line" in
         *'"text":"wait"'*)
-          # A turn that stays open until interrupted or the process is killed.
+          # A turn that stays open until interrupted or the process is killed, with a
+          # call in flight that the interrupt cuts.
           printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"working"}}}'
+          printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"tool_use","id":"toolu_cut","name":"Bash","input":{"command":"sleep 600"}}]}}'
           continue
           ;;
         *'"text":"die"'*)
@@ -85,6 +88,10 @@ while IFS= read -r line; do
       esac
       # The delta types the real CLI interleaves: only the text one is the message.
       printf '%s\n' '{"type":"system","subtype":"status","status":"requesting"}'
+      printf '%s\n' '{"type":"system","subtype":"thinking_tokens","count":1}'
+      printf '%s\n' '{"type":"system","subtype":"commands_changed"}'
+      printf '%s\n' '{"type":"system","subtype":"post_turn_summary"}'
+      printf '%s\n' '{"type":"system","subtype":"task_summary"}'
       printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}'
       printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}}'
       printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"AAAA"}}}'

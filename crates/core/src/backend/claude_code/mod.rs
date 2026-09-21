@@ -1082,8 +1082,10 @@ impl Session for ClaudeSession {
                 return Ok(());
             }
         }
-        // Closing stdin is the CLI's own way out; the kill is for one that does not take
-        // it. The reader observes the exit and emits `Exited`.
+        // Closing stdin is the CLI's own way out, but nothing waits for it to take it: the
+        // kill follows at once, so the CLI's own end-of-session work (its hooks, a last
+        // write) is cut short. A grace period before the kill is a later slice's. The
+        // reader observes the exit and emits `Exited`.
         *self.shared.stdin.lock().unwrap() = None;
         let _ = self.shared.child.lock().unwrap().kill();
         Ok(())

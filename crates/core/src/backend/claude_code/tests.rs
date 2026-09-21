@@ -430,6 +430,17 @@ fn busy_while_a_turn_is_open_and_the_inbox_waits_for_it() {
         &kinds(&got)[from..from + 3],
         ["TurnEnded", "TurnStarted", "Delivery"]
     );
+    // The cut turn's call was reported, and is not claimed to have run.
+    assert!(got[..from]
+        .iter()
+        .any(|e| matches!(e, Event::ToolCall { call, .. } if call.0 == "toolu_cut")));
+    assert!(!got
+        .iter()
+        .any(|e| matches!(e, Event::RanWithoutAsking { turn: t, .. } if *t == turn)));
+    // The interrupt's acknowledgement and the CLI's progress records are not events.
+    assert!(!got
+        .iter()
+        .any(|e| matches!(e, Event::Diagnostic { text } if text.contains("unhandled"))));
     assert_eq!(
         got[from + 2],
         Event::Delivery {
