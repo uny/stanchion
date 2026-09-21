@@ -831,7 +831,7 @@ impl Shared {
                     }
                 }
             }
-            None if !turn.calls.is_empty() => out.push(Event::Diagnostic {
+            None if !turn.interrupting && !turn.calls.is_empty() => out.push(Event::Diagnostic {
                 text: format!(
                     "result without permission_denials: {} call(s) not reported either way",
                     turn.calls.len()
@@ -1105,7 +1105,8 @@ impl Session for ClaudeSession {
 
 impl Drop for ClaudeSession {
     /// Dropping the session ends the attachment: the process is killed and the reader is
-    /// joined, so the lease — and the consent run — is over when this returns.
+    /// joined, so the lease — and the consent run — is over when this returns. From the
+    /// reading thread itself the join is skipped, and the lease ends with that thread.
     fn drop(&mut self) {
         let _ = self.terminate();
         if let Some(reader) = self.reader.lock().unwrap().take() {
