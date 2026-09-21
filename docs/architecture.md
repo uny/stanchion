@@ -137,8 +137,8 @@ startup, and repeats every turn; a process outlives its `result` lines until std
 closes; a config directory other than the user's own does not see the Keychain sign-in,
 which surfaces on the first turn, not at `start`; and the `result` line's
 `permission_denials` names the calls the CLI refused by its own rules. Approval is not in this slice: no `--permission-prompt-tool` is passed, the CLI
-denies non-interactively, and every call its own rules allowed is reported as
-`RanWithoutAsking` from the `result` line's `permission_denials`. `after_interrupt` is
+denies non-interactively, and every call its own rules allowed on a turn that ran to its
+end is reported as `RanWithoutAsking` from the `result` line's `permission_denials`. `after_interrupt` is
 `Unmeasured` — `interrupt` sends the stream-json control request rather than the SIGINT
 #42 measured — until the resume slice measures it. CI drives the backend through
 `crates/core/tests/fixtures/fake-claude.sh`, a shell script that emits the measured

@@ -196,9 +196,9 @@ fn one_turn_over_the_wire() {
             "SessionOpened",
             "MessagePartial",
             "MessagePartial",
+            "ToolCall",
+            "ToolCall",
             "MessageComplete",
-            "ToolCall",
-            "ToolCall",
             "ToolResult",
             "ToolResult",
             "Usage",
@@ -222,7 +222,7 @@ fn one_turn_over_the_wire() {
         }
     );
     assert_eq!(
-        got[5],
+        got[7],
         Event::MessageComplete {
             turn,
             message: Message {
@@ -232,7 +232,7 @@ fn one_turn_over_the_wire() {
         }
     );
     assert_eq!(
-        got[6],
+        got[5],
         Event::ToolCall {
             turn,
             call: ToolCallId("toolu_ran".into()),
@@ -709,6 +709,89 @@ fn an_existing_root_is_tightened_to_0700() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_symlinked_account_directory_is_refused() {
+    let dirs = Dirs::new("symlink-account");
+    let root = ConfigRoot::new(&dirs.root).unwrap();
+    std::os::unix::fs::symlink(&dirs.workspace, dirs.root.join("alice%40example%2Ecom")).unwrap();
+    let err = ClaudeCode::new(FAKE, root)
+        .start(Start {
+            conversation: ConversationId(1),
+            account: account(),
+            workspace_root: dirs.workspace.clone(),
+            gate: gate(),
+            events: Arc::new(Recorder::default()),
+        })
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        matches!(err, BackendError::CannotStart(ref why) if why.contains("symlink")),
+        "{err}"
+    );
+}
+
+/// A sink that reads the session from inside `event`: allowed for `usage` and
+/// `terminate`, which take only the state lock.
+struct Reentrant {
+    inner: Recorder,
+    session: Mutex<Option<Arc<dyn Session>>>,
+    usages: Mutex<Vec<Usage>>,
+}
+
+impl EventSink for Reentrant {
+    fn event(&self, event: Event) {
+        let session = self.session.lock().unwrap().clone();
+        if let Some(session) = session {
+            self.usages.lock().unwrap().push(session.usage());
+            if matches!(event, Event::TurnEnded { .. }) {
+                session.terminate().unwrap();
+            }
+        }
+        self.inner.event(event);
+    }
+}
+
+#[test]
+fn a_sink_may_read_usage_and_terminate_from_inside_event() {
+    let dirs = Dirs::new("reentrant");
+    let events = Arc::new(Reentrant {
+        inner: Recorder::default(),
+        session: Mutex::new(None),
+        usages: Mutex::new(Vec::new()),
+    });
+    let backend = backend(&dirs);
+    let session: Arc<dyn Session> = Arc::from(
+        backend
+            .start(Start {
+                conversation: ConversationId(1),
+                account: account(),
+                workspace_root: dirs.workspace.clone(),
+                gate: gate(),
+                events: events.clone(),
+            })
+            .unwrap(),
+    );
+    *events.session.lock().unwrap() = Some(session.clone());
+    session.send(UserInput { text: "hi".into() }).unwrap();
+    let got = events.inner.wait_for("Exited", is_exited);
+    assert_eq!(exited(&got).unwrap().0, &Exit::Terminated);
+    let usages = events.usages.lock().unwrap();
+    assert_eq!(usages.first(), Some(&Usage::NotReported));
+    assert!(matches!(
+        usages.last(),
+        Some(Usage::Reported {
+            input_tokens: 10,
+            ..
+        })
+    ));
+    drop(usages);
+    // The sink holds the last reference; release it so the session drops here, off the
+    // reader thread.
+    events.session.lock().unwrap().take();
+    drop(session);
+}
+
 #[test]
 fn a_missing_binary_cannot_start() {
     let dirs = Dirs::new("missing");
@@ -735,6 +818,8 @@ fn a_missing_binary_cannot_start() {
 #[test]
 fn directory_names_are_injective_and_have_no_separators() {
     assert_eq!(dir_name("alice"), "alice");
+    assert_eq!(dir_name("Alice"), "%41lice");
+    assert_ne!(dir_name("Alice").to_lowercase(), dir_name("alice"));
     assert_eq!(dir_name("a b/../c"), "a%20b%2F%2E%2E%2Fc");
     assert_eq!(dir_name("é"), "%C3%A9");
     assert_ne!(dir_name("a%2F"), dir_name("a/"));

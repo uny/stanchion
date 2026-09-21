@@ -2,8 +2,10 @@
 //! (#46). This slice is the supervision — spawn, the stream-json wire in both directions,
 //! the four lifetimes, exit — and nothing of approval: no `--permission-prompt-tool` is
 //! passed, so the CLI runs non-interactively, denies what its own rules do not allow, and
-//! every call it does make is reported as [`Event::RanWithoutAsking`]. The approval
-//! slice that wires the CLI's requests to the gate comes after it.
+//! every call it does make on a turn that ran to its end is reported as
+//! [`Event::RanWithoutAsking`] (an interrupted turn's calls are not claimed either way:
+//! the cut one may not have run). The approval slice that wires the CLI's requests to
+//! the gate comes after it.
 //!
 //! # What was measured (`claude` 2.1.266, #42 and this module's own runs)
 //!
@@ -51,7 +53,10 @@
 //! with, and a thread that blocks in `read_line` is the simplest thing that cannot lose a
 //! line. Events are delivered from the reading thread, or from the caller's thread for
 //! the ones a call itself produces, as the contract allows; an `emit` lock keeps the
-//! order on the sink the same as the order they were decided in.
+//! order on the sink the same as the order they were decided in, and the state lock is
+//! released before the sink is called, so a sink may read `usage` or `terminate` from
+//! inside `event`. One `assistant` line is one [`Event::MessageComplete`], its text
+//! blocks joined; a tool call is reported from that line's `tool_use` block.
 //!
 //! # The config directory
 //!
@@ -131,11 +136,15 @@ impl ConfigRoot {
     /// directory by a relative path, and a root inside a workspace is written by every
     /// tool the model holds. Both paths are resolved first, so a symlink does not
     /// change the answer.
+    ///
+    /// Returns the account directory and the resolved workspace root, which is what the
+    /// process is given as its working directory: the path that was checked, not the
+    /// path that was named.
     fn account_dir(
         &self,
         account: &AccountId,
         workspace_root: &Path,
-    ) -> Result<PathBuf, BackendError> {
+    ) -> Result<(PathBuf, PathBuf), BackendError> {
         let workspace = workspace_root
             .canonicalize()
             .map_err(|e| BackendError::CannotStart(format!("workspace root: {e}")))?;
@@ -145,18 +154,35 @@ impl ConfigRoot {
             ));
         }
         let dir = self.0.join(dir_name(&account.0));
+        // The root is the core's, 0700; still, a symlink planted at the account's name
+        // would carry the CLI's settings anywhere, so it is refused rather than followed.
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(BackendError::CannotStart(
+                    "the account's config directory is a symlink".into(),
+                ))
+            }
+            Ok(meta) if !meta.is_dir() => {
+                return Err(BackendError::CannotStart(
+                    "the account's config directory is not a directory".into(),
+                ))
+            }
+            _ => {}
+        }
         create_private_dir(&dir)
             .map_err(|e| BackendError::CannotStart(format!("config directory: {e}")))?;
-        Ok(dir)
+        Ok((dir, workspace))
     }
 }
 
-/// An account id as a directory name: ASCII letters, digits, `-` and `_` as themselves,
-/// every other byte as `%XX`. Injective, and free of separators and of `.`.
+/// An account id as a directory name: ASCII lowercase letters, digits, `-` and `_` as
+/// themselves, every other byte — uppercase included — as `%XX`. Injective even on a
+/// case-insensitive filesystem, since nothing that passes through has a case and the hex
+/// digits are always uppercase; and free of separators and of `.`.
 fn dir_name(account: &str) -> String {
     let mut out = String::with_capacity(account.len());
     for b in account.bytes() {
-        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' {
+        if b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_' {
             out.push(b as char);
         } else {
             out.push_str(&format!("%{b:02X}"));
@@ -224,7 +250,7 @@ impl ClaudeCode {
         events: Arc<dyn EventSink>,
         resume: Option<String>,
     ) -> Result<Box<dyn Session>, BackendError> {
-        let config_dir = self.root.account_dir(&account, &workspace_root)?;
+        let (config_dir, cwd) = self.root.account_dir(&account, &workspace_root)?;
         let mut command = Command::new(&self.binary);
         command
             .args([
@@ -238,7 +264,7 @@ impl ClaudeCode {
                 "--setting-sources",
                 "user",
             ])
-            .current_dir(&workspace_root)
+            .current_dir(&cwd)
             .env("CLAUDE_CONFIG_DIR", &config_dir)
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
@@ -385,10 +411,10 @@ struct Shared {
     child: Mutex<Child>,
     stdin: Mutex<Option<ChildStdin>>,
     /// Taken before `state` by everything that emits, and held across the emission, so
-    /// the sink sees events in the order the state changed. Events are delivered with
-    /// `state` held too: a sink must return without calling back into the session, or it
-    /// deadlocks on the delivering thread. A sink that needs the session's methods hands
-    /// the event to another thread first.
+    /// the sink sees events in the order the state changed; `state` itself is released
+    /// before the sink is called. So from inside `event` a sink may call `usage` and
+    /// `terminate`, which take only `state`, and may not call `send`, `deliver` or
+    /// `interrupt`, which take `emit` and would deadlock on the delivering thread.
     emit: Mutex<()>,
     state: Mutex<State>,
 }
@@ -415,6 +441,13 @@ impl Shared {
         self.events.event(Event::Diagnostic { text });
     }
 
+    /// Delivers `pending` to the sink. Called with `emit` held and `state` released.
+    fn deliver_pending(&self, pending: Vec<Event>) {
+        for event in pending {
+            self.events.event(event);
+        }
+    }
+
     /// Writes one line to the CLI's stdin.
     fn write_line(&self, line: &str) -> Result<(), BackendError> {
         let mut stdin = self.stdin.lock().unwrap();
@@ -427,41 +460,53 @@ impl Shared {
             .map_err(|e| BackendError::Transport(format!("stdin: {e}")))
     }
 
-    /// Opens a turn and sends `text` as the user's message. `state` is the caller's lock.
-    fn start_turn(&self, state: &mut State, text: &str) -> Result<TurnId, BackendError> {
-        let turn = self.lease.next_turn();
+    /// Opens a turn and sends `text` as the user's message. `state` is the caller's lock;
+    /// the turn is open only once the write succeeded.
+    fn start_turn(
+        &self,
+        state: &mut State,
+        out: &mut Vec<Event>,
+        text: &str,
+    ) -> Result<TurnId, BackendError> {
         self.write_line(&user_line(text))?;
+        let turn = self.lease.next_turn();
         state.turn = Some(OpenTurn {
             id: turn,
             calls: Vec::new(),
             interrupting: false,
         });
-        self.events.event(Event::TurnStarted { turn });
+        out.push(Event::TurnStarted { turn });
         Ok(turn)
     }
 
-    /// Sends the next held inbox message, if any and if no turn is open.
-    fn flush_queue(&self, state: &mut State) {
+    /// Sends the first held inbox message when no turn is open. On a failed write the
+    /// message stays at the head of the queue — still [`Delivery::Enqueued`], still
+    /// held — and the failure goes to the log.
+    fn flush_queue(&self, state: &mut State, out: &mut Vec<Event>) {
         if state.turn.is_some() || state.ended {
             return;
         }
-        while let Some(message) = state.queue.pop_front() {
-            match self.start_turn(state, &inbox_text(&message)) {
-                Ok(_) => {
-                    self.events.event(Event::Delivery {
-                        id: message.id,
-                        state: Delivery::Accepted,
-                    });
-                    return;
-                }
-                Err(e) => self.events.event(Event::Diagnostic {
-                    text: format!("inbox delivery {} failed: {e}", message.id.0),
-                }),
+        let Some(message) = state.queue.front() else {
+            return;
+        };
+        let text = inbox_text(message);
+        let id = message.id;
+        match self.start_turn(state, out, &text) {
+            Ok(_) => {
+                state.queue.pop_front();
+                out.push(Event::Delivery {
+                    id,
+                    state: Delivery::Accepted,
+                });
             }
+            Err(e) => out.push(Event::Diagnostic {
+                text: format!("inbox delivery {} could not be written: {e}", id.0),
+            }),
         }
     }
 
-    /// One stdout line.
+    /// One stdout line. The events it produces are decided under `state` and delivered
+    /// after it is released.
     fn on_line(&self, line: &[u8]) {
         let _emit = self.emit.lock().unwrap();
         let text = String::from_utf8_lossy(line);
@@ -474,31 +519,35 @@ impl Shared {
                 return;
             }
         };
-        let mut state = self.state.lock().unwrap();
-        match value.get("type").and_then(Value::as_str) {
-            Some("system") => self.on_system(&mut state, &value),
-            Some("stream_event") => self.on_stream_event(&state, &value),
-            Some("assistant") => self.on_assistant(&mut state, &value),
-            Some("user") => self.on_user(&state, &value),
-            Some("result") => self.on_result(&mut state, &value),
-            // The acknowledgement of a control request `interrupt` sent; the turn's end is
-            // the `result` line that follows, and this carries nothing else. The rate
-            // limit line is the CLI's own quota accounting, not this run's.
-            Some("control_response" | "rate_limit_event") => {}
-            other => self.events.event(Event::Diagnostic {
-                text: format!(
-                    "unhandled line of type {}",
-                    escape_inline(other.unwrap_or("(none)").as_bytes())
-                ),
-            }),
+        let mut out = Vec::new();
+        {
+            let mut state = self.state.lock().unwrap();
+            match value.get("type").and_then(Value::as_str) {
+                Some("system") => self.on_system(&mut state, &mut out, &value),
+                Some("stream_event") => self.on_stream_event(&state, &mut out, &value),
+                Some("assistant") => self.on_assistant(&mut state, &mut out, &value),
+                Some("user") => self.on_user(&state, &mut out, &value),
+                Some("result") => self.on_result(&mut state, &mut out, &value),
+                // The acknowledgement of a control request `interrupt` sent; the turn's
+                // end is the `result` line that follows, and this carries nothing else.
+                // The rate limit line is the CLI's own quota accounting, not this run's.
+                Some("control_response" | "rate_limit_event") => {}
+                other => out.push(Event::Diagnostic {
+                    text: format!(
+                        "unhandled line of type {}",
+                        escape_inline(other.unwrap_or("(none)").as_bytes())
+                    ),
+                }),
+            }
         }
+        self.deliver_pending(out);
     }
 
-    fn on_system(&self, state: &mut State, value: &Value) {
+    fn on_system(&self, state: &mut State, out: &mut Vec<Event>, value: &Value) {
         let subtype = value.get("subtype").and_then(Value::as_str).unwrap_or("");
         if subtype != "init" {
             if !SYSTEM_NOISE.contains(&subtype) {
-                self.events.event(Event::Diagnostic {
+                out.push(Event::Diagnostic {
                     text: format!("system {}", escape_inline(subtype.as_bytes())),
                 });
             }
@@ -513,7 +562,7 @@ impl Shared {
                     .as_bytes(),
             )
         };
-        self.events.event(Event::Diagnostic {
+        out.push(Event::Diagnostic {
             text: format!(
                 "init: claude {} model {} permissionMode {}",
                 field("claude_code_version"),
@@ -522,7 +571,7 @@ impl Shared {
             ),
         });
         let Some(id) = value.get("session_id").and_then(Value::as_str) else {
-            self.events.event(Event::Diagnostic {
+            out.push(Event::Diagnostic {
                 text: "init carried no session_id".into(),
             });
             return;
@@ -530,11 +579,11 @@ impl Shared {
         match &state.session {
             None => {
                 state.session = Some(id.to_string());
-                self.events.event(Event::SessionOpened {
+                out.push(Event::SessionOpened {
                     session: self.session_id(id.to_string()),
                 });
             }
-            Some(known) if known != id => self.events.event(Event::Diagnostic {
+            Some(known) if known != id => out.push(Event::Diagnostic {
                 text: format!(
                     "init reported session {} but this attachment is {}",
                     escape_inline(id.as_bytes()),
@@ -545,7 +594,7 @@ impl Shared {
         }
     }
 
-    fn on_stream_event(&self, state: &State, value: &Value) {
+    fn on_stream_event(&self, state: &State, out: &mut Vec<Event>, value: &Value) {
         let Some(turn) = &state.turn else { return };
         let Some(event) = value.get("event") else {
             return;
@@ -560,14 +609,14 @@ impl Shared {
             return;
         }
         if let Some(text) = delta.get("text").and_then(Value::as_str) {
-            self.events.event(Event::MessagePartial {
+            out.push(Event::MessagePartial {
                 turn: turn.id,
                 text: text.to_string(),
             });
         }
     }
 
-    fn on_assistant(&self, state: &mut State, value: &Value) {
+    fn on_assistant(&self, state: &mut State, out: &mut Vec<Event>, value: &Value) {
         let Some(message) = value.get("message") else {
             return;
         };
@@ -580,7 +629,7 @@ impl Shared {
         if message.get("model").and_then(Value::as_str) == Some("<synthetic>") {
             for block in blocks {
                 if let Some(text) = block.get("text").and_then(Value::as_str) {
-                    self.events.event(Event::Diagnostic {
+                    out.push(Event::Diagnostic {
                         text: format!("claude: {}", escape_inline(text.as_bytes())),
                     });
                 }
@@ -588,22 +637,23 @@ impl Shared {
             return;
         }
         let Some(turn) = state.turn.as_mut() else {
-            self.events.event(Event::Diagnostic {
+            out.push(Event::Diagnostic {
                 text: "assistant message outside a turn".into(),
             });
             return;
         };
+        // One message per `assistant` line: its text blocks joined, in order, so the
+        // partials that preceded them are reset once, not per block.
+        let mut text = String::new();
         for block in blocks {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
-                    let text = block.get("text").and_then(Value::as_str).unwrap_or("");
-                    self.events.event(Event::MessageComplete {
-                        turn: turn.id,
-                        message: Message {
-                            role: Role::Assistant,
-                            text: text.to_string(),
-                        },
-                    });
+                    if let Some(t) = block.get("text").and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(t);
+                    }
                 }
                 Some("tool_use") => {
                     let call = ToolCallId(
@@ -629,7 +679,7 @@ impl Shared {
                     );
                     turn.calls
                         .push((call.clone(), name.clone(), arguments.clone()));
-                    self.events.event(Event::ToolCall {
+                    out.push(Event::ToolCall {
                         turn: turn.id,
                         call,
                         name,
@@ -639,9 +689,18 @@ impl Shared {
                 _ => {}
             }
         }
+        if !text.is_empty() {
+            out.push(Event::MessageComplete {
+                turn: turn.id,
+                message: Message {
+                    role: Role::Assistant,
+                    text,
+                },
+            });
+        }
     }
 
-    fn on_user(&self, state: &State, value: &Value) {
+    fn on_user(&self, state: &State, out: &mut Vec<Event>, value: &Value) {
         // A `user` line on stdout is a tool result the CLI fed the model, or (with
         // `--replay-user-messages`, not passed) an echo of our own input. Only the first
         // is reported.
@@ -673,7 +732,7 @@ impl Shared {
                     .join("\n"),
                 _ => String::new(),
             };
-            self.events.event(Event::ToolResult {
+            out.push(Event::ToolResult {
                 turn: turn.id,
                 call,
                 output: escape(output.as_bytes()),
@@ -685,9 +744,9 @@ impl Shared {
         }
     }
 
-    fn on_result(&self, state: &mut State, value: &Value) {
+    fn on_result(&self, state: &mut State, out: &mut Vec<Event>, value: &Value) {
         let Some(turn) = state.turn.take() else {
-            self.events.event(Event::Diagnostic {
+            out.push(Event::Diagnostic {
                 text: "result outside a turn".into(),
             });
             return;
@@ -709,10 +768,10 @@ impl Shared {
         let turn_usage = match (input, output) {
             (Some(input_tokens), Some(output_tokens)) => {
                 let (i, o, c) = state.totals.get_or_insert((0, 0, None));
-                *i += input_tokens;
-                *o += output_tokens;
+                *i = i.saturating_add(input_tokens);
+                *o = o.saturating_add(output_tokens);
                 if let Some(cost) = cost {
-                    *c = Some(c.unwrap_or(0) + cost.micros);
+                    *c = Some(c.unwrap_or(0).saturating_add(cost.micros));
                 }
                 Usage::Reported {
                     input_tokens,
@@ -722,13 +781,15 @@ impl Shared {
             }
             _ => Usage::NotReported,
         };
-        self.events.event(Event::Usage {
+        out.push(Event::Usage {
             turn: turn.id,
             usage: turn_usage,
         });
 
         // Nothing reached the gate in this slice, so a call the CLI did not refuse by its
-        // own rules is a call that ran without asking.
+        // own rules is a call that ran without asking — on a turn that ran to its end.
+        // An interrupted turn's last call may have been cut before it ran (#42: the CLI
+        // closes it with a synthetic rejection), so nothing is claimed for that turn.
         let denied: Vec<&str> = value
             .get("permission_denials")
             .and_then(Value::as_array)
@@ -737,8 +798,8 @@ impl Shared {
             .filter_map(|d| d.get("tool_use_id").and_then(Value::as_str))
             .collect();
         for (call, name, arguments) in turn.calls {
-            if !denied.contains(&call.0.as_str()) {
-                self.events.event(Event::RanWithoutAsking {
+            if !turn.interrupting && !denied.contains(&call.0.as_str()) {
+                out.push(Event::RanWithoutAsking {
                     turn: turn.id,
                     call,
                     name,
@@ -765,8 +826,8 @@ impl Shared {
         } else {
             TurnEnd::Completed
         };
-        self.events.event(Event::TurnEnded { turn: turn.id, end });
-        self.flush_queue(state);
+        out.push(Event::TurnEnded { turn: turn.id, end });
+        self.flush_queue(state, out);
     }
 
     /// Waits for the process after its stdout closed.
@@ -785,13 +846,14 @@ impl Shared {
     /// `Exited` is the last event. Runs once, on the reading thread.
     fn finish(&self, status: Option<ExitStatus>) {
         let _emit = self.emit.lock().unwrap();
+        let mut out = Vec::new();
         let mut state = self.state.lock().unwrap();
         if std::mem::replace(&mut state.ended, true) {
             return;
         }
         *self.stdin.lock().unwrap() = None;
         if let Some(turn) = state.turn.take() {
-            self.events.event(Event::TurnEnded {
+            out.push(Event::TurnEnded {
                 turn: turn.id,
                 end: TurnEnd::Cut,
             });
@@ -811,8 +873,10 @@ impl Shared {
                 },
             }
         };
+        drop(state);
         let ended = self.lease.end();
-        self.events.event(Event::Exited { exit, ended });
+        out.push(Event::Exited { exit, ended });
+        self.deliver_pending(out);
     }
 
     fn checked(&self) -> Result<MutexGuard<'_, State>, BackendError> {
@@ -891,22 +955,31 @@ impl Session for ClaudeSession {
 
     fn send(&self, input: UserInput) -> Result<TurnId, BackendError> {
         let _emit = self.shared.emit.lock().unwrap();
-        let mut state = self.shared.checked()?;
-        if state.turn.is_some() {
-            return Err(BackendError::Busy);
-        }
-        self.shared.start_turn(&mut state, &input.text)
+        let mut out = Vec::new();
+        let result = {
+            let mut state = self.shared.checked()?;
+            if state.turn.is_some() {
+                return Err(BackendError::Busy);
+            }
+            self.shared.start_turn(&mut state, &mut out, &input.text)
+        };
+        self.shared.deliver_pending(out);
+        result
     }
 
     fn deliver(&self, message: InboxMessage) -> Result<(), BackendError> {
         let _emit = self.shared.emit.lock().unwrap();
-        let mut state = self.shared.checked()?;
-        self.shared.events.event(Event::Delivery {
-            id: message.id,
-            state: Delivery::Enqueued,
-        });
-        state.queue.push_back(message);
-        self.shared.flush_queue(&mut state);
+        let mut out = Vec::new();
+        {
+            let mut state = self.shared.checked()?;
+            out.push(Event::Delivery {
+                id: message.id,
+                state: Delivery::Enqueued,
+            });
+            state.queue.push_back(message);
+            self.shared.flush_queue(&mut state, &mut out);
+        }
+        self.shared.deliver_pending(out);
         Ok(())
     }
 
@@ -917,8 +990,10 @@ impl Session for ClaudeSession {
             return Ok(());
         };
         if !turn.interrupting {
-            turn.interrupting = true;
+            // Flagged only once the request is on the wire: a failed write leaves the
+            // turn as it was, so its end is not misreported and a retry can send again.
             self.shared.write_line(&interrupt_line(turn.id.0))?;
+            turn.interrupting = true;
         }
         Ok(())
     }
