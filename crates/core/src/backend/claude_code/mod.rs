@@ -418,7 +418,10 @@ struct Shared {
     /// the sink sees events in the order the state changed; `state` itself is released
     /// before the sink is called. So from inside `event` a sink may call `usage` and
     /// `terminate`, which take only `state`, and may not call `send`, `deliver` or
-    /// `interrupt`, which take `emit` and would deadlock on the delivering thread.
+    /// `interrupt`, which take `emit` and would deadlock on the delivering thread. It
+    /// may drop its last reference to the session from an event the reading thread
+    /// delivers, but not from one `send` or `deliver` delivers: the drop joins the
+    /// reader, which is waiting for `emit`.
     emit: Mutex<()>,
     state: Mutex<State>,
 }
@@ -1047,7 +1050,12 @@ impl Drop for ClaudeSession {
     fn drop(&mut self) {
         let _ = self.terminate();
         if let Some(reader) = self.reader.lock().unwrap().take() {
-            let _ = reader.join();
+            // A sink may hold the last reference and drop it from inside `event` on the
+            // reading thread itself; a thread cannot join itself, and the reader is
+            // ending anyway once `Exited` is delivered.
+            if reader.thread().id() != thread::current().id() {
+                let _ = reader.join();
+            }
         }
     }
 }

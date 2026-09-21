@@ -818,6 +818,56 @@ fn a_sink_may_read_usage_and_terminate_from_inside_event() {
     drop(session);
 }
 
+/// A sink that holds the only reference to the session and lets go of it from inside
+/// `event`, on the reading thread.
+struct Releasing {
+    inner: Recorder,
+    session: Mutex<Option<Box<dyn Session>>>,
+}
+
+impl EventSink for Releasing {
+    fn event(&self, event: Event) {
+        if matches!(event, Event::TurnEnded { .. }) {
+            self.session
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .terminate()
+                .unwrap();
+        }
+        if matches!(event, Event::Exited { .. }) {
+            self.session.lock().unwrap().take();
+        }
+        self.inner.event(event);
+    }
+}
+
+#[test]
+fn a_sink_may_drop_the_session_from_inside_event_on_the_reading_thread() {
+    let dirs = Dirs::new("release");
+    let events = Arc::new(Releasing {
+        inner: Recorder::default(),
+        session: Mutex::new(None),
+    });
+    let backend = backend(&dirs);
+    let session = backend
+        .start(Start {
+            conversation: ConversationId(1),
+            account: account(),
+            workspace_root: dirs.workspace.clone(),
+            gate: gate(),
+            events: events.clone(),
+        })
+        .unwrap();
+    session.send(UserInput { text: "hi".into() }).unwrap();
+    *events.session.lock().unwrap() = Some(session);
+    let got = events.inner.wait_for("Exited", is_exited);
+    assert_eq!(exited(&got).unwrap().0, &Exit::Terminated);
+    // Dropped on the reader, without a panic or a wait on itself.
+    assert!(events.session.lock().unwrap().is_none());
+}
+
 #[test]
 fn a_missing_binary_cannot_start() {
     let dirs = Dirs::new("missing");
