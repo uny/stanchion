@@ -301,10 +301,10 @@ fn the_helper_answers_calls_as_the_core_does_not_in_the_order_asked() {
 "#,
     );
     core.join().unwrap();
+    // The stand-in reads both requests before answering either: a helper that handled
+    // calls one at a time would never send the second, and this test would hang. Each
+    // answer reaches its own id whichever order the threads wrote them in.
     assert_eq!(lines.len(), 3, "{lines:#?}");
-    // The ping was answered while both calls were pending; the calls were answered as
-    // the core answered them (b first), each to its own id.
-    assert!(lines[0].contains(r#""id":3,"#), "{lines:#?}");
     assert!(
         line_with_id(&lines, "1").contains(r#"\"message\":\"a\""#),
         "{lines:#?}"
@@ -313,5 +313,8 @@ fn the_helper_answers_calls_as_the_core_does_not_in_the_order_asked() {
         line_with_id(&lines, "2").contains(r#"\"message\":\"b\""#),
         "{lines:#?}"
     );
-    assert!(lines[1].contains(r#""id":2,"#), "{lines:#?}");
+    assert_eq!(
+        line_with_id(&lines, "3"),
+        r#"{"jsonrpc":"2.0","id":3,"result":{}}"#
+    );
 }
