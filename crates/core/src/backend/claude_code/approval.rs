@@ -445,18 +445,24 @@ impl Shared {
                 open.pending.retain(|i| *i != invocation);
             }
         }
-        if let Some(e) = reply.error.take() {
-            self.diagnostic_if_live(format!(
-                "approval reply for {} could not be written: {e}",
-                escape_inline(id.as_bytes())
-            ));
-        }
+        // An allow the CLI never read is no execution: the helper gave up on the socket,
+        // the CLI denied the call (fail-closed), and the token stays in the record alone.
+        let delivered = match reply.error.take() {
+            Some(e) => {
+                self.diagnostic_if_live(format!(
+                    "approval reply for {} could not be written: {e}",
+                    escape_inline(id.as_bytes())
+                ));
+                false
+            }
+            None => true,
+        };
         match invocation {
             Some(invocation) => self.emit_if_live(Event::ApprovalResolved {
                 turn,
                 call,
                 invocation,
-                allowed: outcome.is_ok(),
+                allowed: outcome.is_ok() && delivered,
             }),
             // Refused before a dialog: the CLI has its deny; the log has why.
             None => {

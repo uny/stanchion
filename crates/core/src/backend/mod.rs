@@ -455,7 +455,10 @@ pub enum Event {
         rendered: Rendered,
     },
     /// The gate answered. Whether it minted a token is not reported here — the record has
-    /// that — only that the request is no longer pending and which way it went.
+    /// that — only that the request is no longer pending and which way it went. `allowed`
+    /// is true when the gate allowed *and* the answer reached the backend's process; an
+    /// allow that could not be delivered resolves as not allowed, with a `Diagnostic`
+    /// saying why, since the call did not run.
     ApprovalResolved {
         turn: TurnId,
         call: ToolCallId,
