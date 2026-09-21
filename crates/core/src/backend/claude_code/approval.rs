@@ -408,13 +408,13 @@ impl Shared {
             spec,
             &mut reply,
             &mut |rendered: &Rendered| {
-                invocation = Some(rendered.invocation);
                 // Under `emit`, so this is atomic with the turn's end: `on_result` takes
                 // the turn and delivers `TurnEnded` under the same lock. While the turn
                 // is still open the invocation is recorded on it, so that its end cancels
                 // the dialog; if it ended in the meantime — the CLI closed the call
                 // before the gate got to it — the request is withdrawn here, and no
-                // event names it.
+                // approval event names it: `invocation` stays `None`, so the refusal
+                // below is logged, not resolved.
                 let _emit = self.emit.lock().unwrap();
                 let live = {
                     let mut state = self.state.lock().unwrap();
@@ -431,6 +431,7 @@ impl Shared {
                     self.lease.gate().cancel(rendered.invocation);
                     return;
                 }
+                invocation = Some(rendered.invocation);
                 self.events.event(Event::ApprovalRequested {
                     turn,
                     call: call.clone(),
