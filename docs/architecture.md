@@ -137,9 +137,19 @@ measured beyond #42, signed in and not: `system/init` arrives after an input, no
 startup, and repeats every turn; a process outlives its `result` lines until stdin
 closes; a config directory other than the user's own does not see the Keychain sign-in,
 which surfaces on the first turn, not at `start`; and the `result` line's
-`permission_denials` names the calls the CLI refused by its own rules. Approval is not in this slice: no `--permission-prompt-tool` is passed, the CLI
-denies non-interactively, and every call its own rules allowed on a turn that ran to its
-end is reported as `RanWithoutAsking` from the `result` line's `permission_denials`. `after_interrupt` is
+`permission_denials` names the calls the CLI refused by its own rules. Approval: the CLI
+is started with `--permission-mode manual` and `--permission-prompt-tool` naming a tool
+on `stanchion-prompt-helper` (`crates/core/src/bin`), a stdio MCP server the core ships
+and names in an MCP configuration passed on the command line with `--strict-mcp-config`;
+the helper relays each request over a Unix socket the core bound for that attachment,
+in a directory it created with mode 0700, and the core answers it through
+`CliApproval` — a `Bash` call becomes a `CliCommand` request on the gate, any other tool
+is denied before the gate until #50 gives it a door. `ApprovalRequested` is emitted
+from the gate's observer at the moment the dialog opens, `ApprovalResolved` when the
+reply is sent. A call that neither asked at the socket nor appears in
+`permission_denials` — one the CLI's own rules allowed — is reported as
+`RanWithoutAsking` on a turn that ran to its end. The CLI fails closed on a helper it
+cannot reach or a reply it cannot read (measured; `crates/core/src/backend/claude_code/approval.rs`). `after_interrupt` is
 `Unmeasured` — `interrupt` sends the stream-json control request rather than the SIGINT
 #42 measured — until the resume slice measures it. CI drives the backend through
 `crates/core/tests/fixtures/fake-claude.sh`, a shell script that emits the measured

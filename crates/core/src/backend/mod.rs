@@ -136,6 +136,13 @@ pub struct TurnId(u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AttachmentId(u64);
 
+impl AttachmentId {
+    /// The number, for a backend that names a per-attachment resource after it.
+    pub(crate) fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 // The lease lives in its own module so that `RunEnded` has exactly one constructor:
 // `Attachment::end`. A backend in a sibling module cannot build one.
 mod lease {
@@ -180,15 +187,12 @@ mod lease {
             self.id
         }
 
-        /// The consent run to bind requests to. Crate-private on purpose. The first
-        /// caller outside tests is the Claude Code approval slice (#46); until then the
-        /// allow goes with it.
-        #[cfg_attr(not(test), allow(dead_code))]
+        /// The consent run to bind requests to. Crate-private on purpose: a backend asks
+        /// under it; nothing above a backend learns it.
         pub(crate) fn run(&self) -> RunId {
             self.run
         }
 
-        #[cfg_attr(not(test), allow(dead_code))]
         pub(crate) fn gate(&self) -> &Consent {
             &self.gate
         }

@@ -16,6 +16,7 @@
 use std::path::Path;
 
 use crate::consent::policy::Refusal;
+use crate::consent::presenter::Rendered;
 use crate::consent::request::{Class, ClassSpec, InlineProfile, Program, RequestSpec};
 use crate::consent::token::{ConsentToken, Origin};
 use crate::consent::Consent;
@@ -186,13 +187,25 @@ impl CliApproval {
         spec: RequestSpec,
         transport: &mut dyn ReplyTransport,
     ) -> Result<(), Refusal> {
+        self.resolve_observed(gate, spec, transport, &mut |_| {})
+    }
+
+    /// [`CliApproval::resolve`] with [`Consent::ask_observed`]'s observer: a backend that
+    /// reports the request as pending before it is answered passes one here.
+    pub fn resolve_observed(
+        &self,
+        gate: &Consent,
+        spec: RequestSpec,
+        transport: &mut dyn ReplyTransport,
+        observer: &mut dyn FnMut(&Rendered),
+    ) -> Result<(), Refusal> {
         let cli_request_id = match &spec.class {
             ClassSpec::CliCommand { cli_request_id, .. } => cli_request_id.clone(),
             _ => return Err(Refusal::WrongDoor),
         };
         // A token minted and then overtaken — its run ended, its request cancelled — is
         // refused at the door, and that refusal owes the CLI a deny as much as any other.
-        let refusal = match gate.ask(spec) {
+        let refusal = match gate.ask_observed(spec, observer) {
             Ok(token) => match self.allow(gate, token, transport) {
                 Ok(()) => return Ok(()),
                 Err(refusal) => refusal,

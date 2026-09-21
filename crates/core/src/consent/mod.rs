@@ -171,6 +171,22 @@ impl Consent {
     /// Never call this from the thread the presenter needs — a native modal runs on the
     /// main thread, and a main thread parked here would never open it.
     pub fn ask(&self, spec: RequestSpec) -> Result<ConsentToken, Refusal> {
+        self.ask_observed(spec, &mut |_| {})
+    }
+
+    /// [`Consent::ask`], with `observer` called once, on the asking thread, at the moment
+    /// the request is pending and about to be presented — with the same [`Rendered`] the
+    /// dialog is given, its invocation id included. That is the only way an asker learns
+    /// what is being asked before it is answered: the return value names the invocation
+    /// only when a token was minted. A request the policy refuses, or that is over the
+    /// presenter's capacity or past the queue limit, is refused before the observer is
+    /// called, so it is never told of a request that will not be shown. No gate lock is
+    /// held across the call; the observer may not call back into the gate.
+    pub fn ask_observed(
+        &self,
+        spec: RequestSpec,
+        observer: &mut dyn FnMut(&Rendered),
+    ) -> Result<ConsentToken, Refusal> {
         let request = Arc::new(self.build(spec)?);
 
         // Consent is not authorization: the refused tier never reaches a dialog, and
@@ -213,6 +229,7 @@ impl Consent {
                 },
             );
         }
+        observer(&rendered);
         let outcome = self.present(&rendered, invocation, tx, &rx);
         let re_tier = self.policy.classify(&request);
         let withdrawn = {

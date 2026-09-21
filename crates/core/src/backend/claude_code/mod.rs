@@ -1,11 +1,12 @@
 //! The Claude Code backend: the unmodified `claude` binary, supervised as a subprocess
-//! (#46). This slice is the supervision — spawn, the stream-json wire in both directions,
-//! the four lifetimes, exit — and nothing of approval: no `--permission-prompt-tool` is
-//! passed, so the CLI runs non-interactively, denies what its own rules do not allow, and
-//! every call it does make on a turn that ran to its end is reported as
-//! [`Event::RanWithoutAsking`] (an interrupted turn's calls are not claimed either way:
-//! the cut one may not have run). The approval slice that wires the CLI's requests to
-//! the gate comes after it.
+//! (#46). Two slices: the supervision — spawn, the stream-json wire in both directions,
+//! the four lifetimes, exit — and the approval path, which hands every call the CLI's
+//! own rules do not already allow to the consent gate through `--permission-prompt-tool`,
+//! a helper the core ships, and a socket the core owns (`approval`). A call that never
+//! reached the gate — one the CLI's rules or built-in safe list allowed on its own — is
+//! reported as [`Event::RanWithoutAsking`] on a turn that ran to its end (an interrupted
+//! turn's calls are not claimed either way: the cut one may not have run). Only a shell
+//! command has a door on the gate yet; the file tools wait on #50 and are denied.
 //!
 //! # What was measured (`claude` 2.1.266, #42 and this module's own runs)
 //!
@@ -85,10 +86,13 @@ use super::{
 };
 use crate::consent::render::{escape, escape_inline};
 
-mod json;
+mod approval;
+pub mod json;
 #[cfg(test)]
 mod tests;
 
+pub use approval::SocketDir;
+use approval::{Asked, Listener};
 use json::Value;
 
 /// The backend version the cut-turn capabilities were measured on (#42).
@@ -233,6 +237,11 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
 pub struct ClaudeCode {
     binary: PathBuf,
     root: ConfigRoot,
+    /// The helper the CLI is told to spawn for its approval requests
+    /// (`src/bin/stanchion-prompt-helper.rs`). Resolved by the application at startup —
+    /// the bundle's own copy — never read from a settings file.
+    helper: PathBuf,
+    sockets: SocketDir,
     /// Extra environment for the process. Tests use it to steer the fake binary; the
     /// application passes nothing.
     env: Vec<(String, String)>,
@@ -242,10 +251,19 @@ impl Sealed for ClaudeCode {}
 
 impl ClaudeCode {
     /// `binary` is the `claude` to run — a path, or a name the shell would resolve.
-    pub fn new(binary: impl Into<PathBuf>, root: ConfigRoot) -> Self {
+    /// `helper` is the prompt helper the CLI spawns, and `sockets` where each attachment's
+    /// socket to it is bound.
+    pub fn new(
+        binary: impl Into<PathBuf>,
+        root: ConfigRoot,
+        helper: impl Into<PathBuf>,
+        sockets: SocketDir,
+    ) -> Self {
         ClaudeCode {
             binary: binary.into(),
             root,
+            helper: helper.into(),
+            sockets,
             env: Vec::new(),
         }
     }
@@ -265,6 +283,10 @@ impl ClaudeCode {
         resume: Option<String>,
     ) -> Result<Box<dyn Session>, BackendError> {
         let (config_dir, cwd) = self.root.account_dir(&account, &workspace_root)?;
+        // The lease first, so the socket can be named after the attachment and be
+        // listening before the CLI's first request; a spawn that fails ends the run.
+        let lease = Attachment::open(gate, Backend::ClaudeCode);
+        let approval = Listener::bind(&self.sockets, lease.id())?;
         let mut command = Command::new(&self.binary);
         command
             .args([
@@ -277,7 +299,16 @@ impl ClaudeCode {
                 "--include-partial-messages",
                 "--setting-sources",
                 "user",
+                // Every call the CLI's own rules do not allow is asked, whatever the
+                // user's settings say the mode is, and asked of the helper alone.
+                "--permission-mode",
+                "manual",
+                "--permission-prompt-tool",
+                approval::PROMPT_TOOL,
+                "--strict-mcp-config",
+                "--mcp-config",
             ])
+            .arg(approval::mcp_config(&self.helper, approval.path()))
             .current_dir(&cwd)
             .env("CLAUDE_CONFIG_DIR", &config_dir)
             .envs(self.env.iter().map(|(k, v)| (k, v)));
@@ -302,7 +333,8 @@ impl ClaudeCode {
         let stderr = child.stderr.take().expect("piped");
 
         let shared = Arc::new(Shared {
-            lease: Attachment::open(gate, Backend::ClaudeCode),
+            lease,
+            approval,
             account,
             // The resolved root, so a stored `SessionId` names the directory that was
             // checked and run in — not a relative path or a symlink that may point
@@ -320,6 +352,10 @@ impl ClaudeCode {
                 ended: false,
                 totals: None,
             }),
+        });
+        thread::spawn({
+            let shared = shared.clone();
+            move || shared.serve_approvals()
         });
         if let Some(id) = resume {
             let _emit = shared.emit.lock().unwrap();
@@ -417,6 +453,8 @@ struct OpenTurn {
     /// Calls the CLI reported this turn, reconciled against the `result` line's
     /// `permission_denials` to tell what ran from what its own rules refused.
     calls: Vec<(ToolCallId, String, String)>,
+    /// Calls whose approval request reached the socket, whichever way it was answered.
+    asked: Asked,
     interrupting: bool,
 }
 
@@ -435,6 +473,7 @@ struct State {
 
 struct Shared {
     lease: Attachment,
+    approval: Listener,
     account: AccountId,
     workspace_root: PathBuf,
     events: Arc<dyn EventSink>,
@@ -506,6 +545,7 @@ impl Shared {
         state.turn = Some(OpenTurn {
             id: turn,
             calls: Vec::new(),
+            asked: Asked::new(),
             interrupting: false,
         });
         out.push(Event::TurnStarted { turn });
@@ -817,9 +857,9 @@ impl Shared {
             usage: turn_usage,
         });
 
-        // Nothing reached the gate in this slice, so a call the CLI did not refuse by its
-        // own rules is a call that ran without asking — on a turn that ran to its end.
-        // An interrupted turn's last call may have been cut before it ran (#42: the CLI
+        // A call that neither asked at the socket nor was refused by the CLI's own rules
+        // is a call that ran without asking — on a turn that ran to its end. An
+        // interrupted turn's last call may have been cut before it ran (#42: the CLI
         // closes it with a synthetic rejection), so nothing is claimed for that turn;
         // nor for one whose `result` carries no denial list at all (a CLI that stopped
         // reporting it), since the claim would then be a guess about every call.
@@ -835,7 +875,10 @@ impl Shared {
         match &denied {
             Some(denied) => {
                 for (call, name, arguments) in turn.calls {
-                    if !turn.interrupting && !denied.contains(&call.0.as_str()) {
+                    if !turn.interrupting
+                        && !denied.contains(&call.0.as_str())
+                        && !turn.asked.contains(&call.0)
+                    {
                         out.push(Event::RanWithoutAsking {
                             turn: turn.id,
                             call,
@@ -920,6 +963,9 @@ impl Shared {
             }
         };
         drop(state);
+        // No further request is accepted, then the pending ones are withdrawn by the
+        // run's end and answered *deny* on their own threads, which emit nothing now.
+        self.approval.close();
         let ended = self.lease.end();
         out.push(Event::Exited { exit, ended });
         self.deliver_pending(out);

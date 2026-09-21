@@ -14,6 +14,13 @@
 #   FAKE_CLAUDE_NO_DENIALS=1   omit `permission_denials` from the result line
 #   FAKE_CLAUDE_STDERR=text    write `text` to stderr at startup
 #   FAKE_CLAUDE_STATE=path     append one line per event to `path` (what it received)
+#   FAKE_CLAUDE_HOLD=path      on the default turn, after the assistant line, wait until
+#                              `path` exists before the tool results and the result line
+#                              (a turn held open with its calls reported)
+#   FAKE_CLAUDE_ASK=1          on the default turn, ask about `toolu_denied` the way the
+#                              real CLI does: spawn the helper named in --mcp-config, drive
+#                              the MCP handshake and one tools/call, and act on the reply
+#                              — allow runs it, deny lists it in permission_denials
 #
 # The session id is the placeholder AGENTS.md prescribes; `.github/scripts/hygiene.sh`
 # rejects a UUID-shaped one.
@@ -45,6 +52,28 @@ emit_result() {
   if [ "${FAKE_CLAUDE_EXIT_AFTER:-0}" -eq "$turns" ]; then
     exit 3
   fi
+}
+
+# The helper command and its one argument, from the --mcp-config JSON the core builds
+# (`approval::mcp_config`; the shape is the core's own, so two fixed fields suffice).
+helper_cmd=""
+helper_arg=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--mcp-config" ]; then
+    helper_cmd=$(printf '%s' "$a" | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
+    helper_arg=$(printf '%s' "$a" | sed -n 's/.*"args":\["\([^"]*\)"\].*/\1/p')
+  fi
+  prev="$a"
+done
+
+# Asks the helper about one call; prints the JSON text it returned.
+ask_helper() {
+  printf '%s\n%s\n%s\n' \
+    '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fake-claude","version":"0"}}}' \
+    '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"approve","arguments":{"tool_name":"'"$1"'","input":'"$2"',"tool_use_id":"'"$3"'"}}}' \
+    | "$helper_cmd" "$helper_arg" | sed -n 's/.*"id":2,.*"text":"\(.*\)"}\]}}$/\1/p' | sed 's/\\"/"/g'
 }
 
 if [ -n "${FAKE_CLAUDE_STDERR:-}" ]; then
@@ -101,8 +130,33 @@ while IFS= read -r line; do
       printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"file"}}}'
       printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}'
       printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"thinking","thinking":"hmm","signature":"AAAA"},{"type":"text","text":"pong"},{"type":"tool_use","id":"toolu_ran","name":"Read","input":{"file_path":"a.txt"}},{"type":"tool_use","id":"toolu_denied","name":"Bash","input":{"command":"rm -rf /"}}]}}'
-      printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_ran","content":"hello\n<b>","is_error":false},{"type":"tool_result","tool_use_id":"toolu_denied","content":[{"type":"text","text":"Permission to use Bash has been denied."}],"is_error":true}]}}'
-      denials=',"permission_denials":[{"tool_name":"Bash","tool_use_id":"toolu_denied","tool_input":{"command":"rm -rf /"}}]'
+      if [ -n "${FAKE_CLAUDE_HOLD:-}" ]; then
+        i=0
+        while [ ! -e "$FAKE_CLAUDE_HOLD" ] && [ "$i" -lt 500 ]; do
+          sleep 0.02
+          i=$((i + 1))
+        done
+      fi
+      denied_result='{"type":"tool_result","tool_use_id":"toolu_denied","content":[{"type":"text","text":"Permission to use Bash has been denied."}],"is_error":true}'
+      denied_denial='{"tool_name":"Bash","tool_use_id":"toolu_denied","tool_input":{"command":"rm -rf /"}}'
+      if [ "${FAKE_CLAUDE_ASK:-0}" = "1" ]; then
+        # As the real CLI: `Read` its own rules allow runs unasked; the `Bash` call is
+        # asked, with the call's own id and input, and the reply decides its fate.
+        reply=$(ask_helper Bash '{"command":"rm -rf /"}' toolu_denied)
+        note "reply:$reply"
+        case "$reply" in
+          *'"behavior":"allow"'*)
+            denied_result='{"type":"tool_result","tool_use_id":"toolu_denied","content":"(ran)","is_error":false}'
+            denied_denial=''
+            ;;
+          *)
+            msg=$(printf '%s' "$reply" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')
+            denied_result='{"type":"tool_result","tool_use_id":"toolu_denied","content":"'"$msg"'","is_error":true}'
+            ;;
+        esac
+      fi
+      printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_ran","content":"hello\n<b>","is_error":false},'"$denied_result"']}}'
+      denials=',"permission_denials":['"$denied_denial"']'
       if [ "${FAKE_CLAUDE_NO_DENIALS:-0}" = "1" ]; then
         denials=''
       fi

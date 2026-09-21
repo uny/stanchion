@@ -17,6 +17,10 @@ use crate::consent::presenter::{
 use crate::consent::{Config, Consent};
 
 const FAKE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
+/// The helper the fake is told about and never spawns: the tests here drive the socket
+/// directly. The end-to-end run through the built helper is in
+/// `crates/core/tests/claude_code_approval.rs`, where the binary is available.
+const HELPER: &str = "/nonexistent/stanchion-prompt-helper";
 const SESSION: &str = "00000000-0000-0000-0000-000000000000";
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -84,16 +88,20 @@ struct Dirs {
     base: PathBuf,
     workspace: PathBuf,
     root: PathBuf,
+    /// Short on purpose: a socket path has ~100 bytes on macOS, and `temp_dir` spends
+    /// half of them.
+    sockets: PathBuf,
     state: PathBuf,
 }
 
 impl Dirs {
     fn new(name: &str) -> Self {
+        let n = NEXT_DIR.fetch_add(1, Ordering::SeqCst);
         let base = std::env::temp_dir().join(format!(
-            "stanchion-claude-code-{name}-{}-{}",
-            std::process::id(),
-            NEXT_DIR.fetch_add(1, Ordering::SeqCst)
+            "stanchion-claude-code-{name}-{}-{n}",
+            std::process::id()
         ));
+        let sockets = std::env::temp_dir().join(format!("sk{}-{n}", std::process::id()));
         let workspace = base.join("ws");
         let root = base.join("cfg");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -104,23 +112,34 @@ impl Dirs {
             base,
             workspace,
             root,
+            sockets,
         }
     }
 
     fn state(&self) -> String {
         std::fs::read_to_string(&self.state).unwrap_or_default()
     }
+
+    fn socket_dir(&self) -> SocketDir {
+        SocketDir::new(&self.sockets).unwrap()
+    }
 }
 
 impl Drop for Dirs {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.base);
+        let _ = std::fs::remove_dir_all(&self.sockets);
     }
 }
 
 fn backend(dirs: &Dirs) -> ClaudeCode {
-    ClaudeCode::new(FAKE, ConfigRoot::new(&dirs.root).unwrap())
-        .env("FAKE_CLAUDE_STATE", dirs.state.to_str().unwrap())
+    ClaudeCode::new(
+        FAKE,
+        ConfigRoot::new(&dirs.root).unwrap(),
+        HELPER,
+        dirs.socket_dir(),
+    )
+    .env("FAKE_CLAUDE_STATE", dirs.state.to_str().unwrap())
 }
 
 fn account() -> AccountId {
@@ -348,9 +367,20 @@ fn one_turn_over_the_wire() {
             0o700
         );
     }
-    assert!(state.contains(
-        "args=-p --output-format stream-json --input-format stream-json --verbose --include-partial-messages --setting-sources user\n"
-    ), "{state}");
+    let args = state
+        .lines()
+        .find_map(|l| l.strip_prefix("args="))
+        .unwrap_or_default();
+    assert!(
+        args.starts_with(
+            "-p --output-format stream-json --input-format stream-json --verbose \
+             --include-partial-messages --setting-sources user --permission-mode manual \
+             --permission-prompt-tool mcp__stanchion__approve --strict-mcp-config \
+             --mcp-config {\"mcpServers\":{\"stanchion\":{\"type\":\"stdio\",\"command\":\"/nonexistent/stanchion-prompt-helper\",\"args\":[\""
+        ),
+        "{args}"
+    );
+    assert!(args.ends_with(".sock\"]}}}"), "{args}");
     assert!(!state.contains("--resume"));
 }
 
@@ -617,9 +647,7 @@ fn resume_reattaches_under_the_stored_account_and_workspace() {
             .count(),
         1
     );
-    assert!(dirs
-        .state()
-        .contains(&format!("--setting-sources user --resume {SESSION}\n")));
+    assert!(dirs.state().contains(&format!(" --resume {SESSION}\n")));
 
     // Another backend's id is refused before anything is spawned.
     let codex = SessionId::new(Backend::Codex, account(), dirs.workspace.clone(), "x");
@@ -675,6 +703,8 @@ fn a_config_root_inside_the_workspace_or_around_it_is_refused() {
     let inside = ClaudeCode::new(
         FAKE,
         ConfigRoot::new(dirs.workspace.join(".claude-accounts")).unwrap(),
+        HELPER,
+        dirs.socket_dir(),
     );
     let err = inside
         .start(Start {
@@ -691,7 +721,12 @@ fn a_config_root_inside_the_workspace_or_around_it_is_refused() {
         "{err}"
     );
 
-    let around = ClaudeCode::new(FAKE, ConfigRoot::new(&dirs.base).unwrap());
+    let around = ClaudeCode::new(
+        FAKE,
+        ConfigRoot::new(&dirs.base).unwrap(),
+        HELPER,
+        dirs.socket_dir(),
+    );
     let err = around
         .start(Start {
             conversation: ConversationId(1),
@@ -752,7 +787,7 @@ fn a_symlinked_account_directory_is_refused() {
     let dirs = Dirs::new("symlink-account");
     let root = ConfigRoot::new(&dirs.root).unwrap();
     std::os::unix::fs::symlink(&dirs.workspace, dirs.root.join("alice%40example%2Ecom")).unwrap();
-    let err = ClaudeCode::new(FAKE, root)
+    let err = ClaudeCode::new(FAKE, root, HELPER, dirs.socket_dir())
         .start(Start {
             conversation: ConversationId(1),
             account: account(),
@@ -920,6 +955,8 @@ fn a_missing_binary_cannot_start() {
     let backend = ClaudeCode::new(
         dirs.base.join("no-such-claude"),
         ConfigRoot::new(&dirs.root).unwrap(),
+        HELPER,
+        dirs.socket_dir(),
     );
     let err = backend
         .start(Start {
@@ -956,5 +993,391 @@ fn the_user_line_is_the_shape_the_cli_reads() {
     assert_eq!(
         interrupt_line(4),
         r#"{"type":"control_request","request_id":"interrupt-4","request":{"subtype":"interrupt"}}"#
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// The approval socket, driven directly (the helper is exercised end to end in
+// `crates/core/tests/claude_code_approval.rs`)
+
+use std::os::unix::net::UnixStream;
+
+/// Allows everything after a zero settle.
+struct Allows;
+
+impl ConsentPresenter for Allows {
+    fn capacity(&self) -> usize {
+        1 << 16
+    }
+    fn show(&self, _: &Rendered, responder: Responder) -> Result<Handle, PresenterError> {
+        responder.answer(Answer::Allow);
+        Ok(Handle(1))
+    }
+    fn dismiss(&self, _: Handle) {}
+}
+
+/// Never answers: keeps every responder until dropped, as a dialog nobody clicks.
+#[derive(Default)]
+struct Holds {
+    open: Mutex<Vec<Responder>>,
+    dismissed: AtomicU64,
+}
+
+impl ConsentPresenter for Holds {
+    fn capacity(&self) -> usize {
+        1 << 16
+    }
+    fn show(&self, _: &Rendered, responder: Responder) -> Result<Handle, PresenterError> {
+        self.open.lock().unwrap().push(responder);
+        Ok(Handle(1))
+    }
+    fn dismiss(&self, _: Handle) {
+        self.dismissed.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn gate_with(presenter: Arc<dyn ConsentPresenter>) -> Arc<Consent> {
+    Arc::new(Consent::new(
+        presenter,
+        Arc::new(AlwaysAsk),
+        Config {
+            settle: Duration::ZERO,
+            ..Config::default()
+        },
+    ))
+}
+
+fn start_with(
+    backend: &ClaudeCode,
+    dirs: &Dirs,
+    events: &Arc<Recorder>,
+    gate: Arc<Consent>,
+) -> Box<dyn Session> {
+    backend
+        .start(Start {
+            conversation: ConversationId(1),
+            account: account(),
+            workspace_root: dirs.workspace.clone(),
+            gate,
+            events: events.clone(),
+        })
+        .unwrap()
+}
+
+fn socket_of(dirs: &Dirs, session: &dyn Session) -> PathBuf {
+    dirs.sockets
+        .join(format!("{}.sock", session.attachment().raw()))
+}
+
+/// Connects as the helper would and asks; returns the reply line.
+fn ask(socket: &Path, line: &str) -> String {
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream.write_all(line.as_bytes()).unwrap();
+    stream.write_all(b"\n").unwrap();
+    let mut reply = String::new();
+    BufReader::new(stream).read_line(&mut reply).unwrap();
+    reply.trim_end().to_string()
+}
+
+fn bash_request(id: &str, command: &str) -> String {
+    format!(
+        r#"{{"tool_name":"Bash","input":{{"command":"{command}","description":"x"}},"tool_use_id":"{id}"}}"#
+    )
+}
+
+/// Sends the default turn with the fake holding it open after the assistant line, and
+/// waits for the calls to be reported. Returns the turn and the file that releases it.
+fn held_turn(dirs: &Dirs, session: &dyn Session, events: &Recorder) -> (TurnId, PathBuf) {
+    let turn = session.send(UserInput { text: "hi".into() }).unwrap();
+    events.wait_for(
+        "ToolCall",
+        |e| matches!(e, Event::ToolCall { call, .. } if call.0 == "toolu_denied"),
+    );
+    (turn, dirs.base.join("release"))
+}
+
+fn release(hold: &Path) {
+    std::fs::write(hold, b"").unwrap();
+}
+
+#[test]
+fn a_declined_request_is_denied_and_reported_before_and_after() {
+    let dirs = Dirs::new("declined");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs).env(
+        "FAKE_CLAUDE_HOLD",
+        dirs.base.join("release").to_str().unwrap(),
+    );
+    let session = start(&backend, &dirs, &events);
+    let (turn, hold) = held_turn(&dirs, session.as_ref(), &events);
+
+    let reply = ask(
+        &socket_of(&dirs, session.as_ref()),
+        &bash_request("toolu_denied", "rm -rf /"),
+    );
+    assert_eq!(
+        reply,
+        r#"{"behavior":"deny","message":"stanchion: declined"}"#
+    );
+    let all = events.wait_for("ApprovalResolved", |e| {
+        matches!(e, Event::ApprovalResolved { .. })
+    });
+    let requested = all
+        .iter()
+        .position(|e| matches!(e, Event::ApprovalRequested { .. }))
+        .unwrap();
+    let resolved = all
+        .iter()
+        .position(|e| matches!(e, Event::ApprovalResolved { .. }))
+        .unwrap();
+    assert!(requested < resolved);
+    let Event::ApprovalRequested {
+        turn: t1,
+        call,
+        invocation,
+        rendered,
+    } = &all[requested]
+    else {
+        unreachable!()
+    };
+    assert_eq!(*t1, turn);
+    assert_eq!(call.0, "toolu_denied");
+    assert_eq!(*invocation, rendered.invocation);
+    assert!(rendered.body.contains("rm -rf /"), "{}", rendered.body);
+    assert!(rendered.title.contains("claude-code"), "{}", rendered.title);
+    assert_eq!(
+        all[resolved],
+        Event::ApprovalResolved {
+            turn,
+            call: ToolCallId("toolu_denied".into()),
+            invocation: *invocation,
+            allowed: false,
+        }
+    );
+
+    // The turn runs to its end: the asked call is not claimed to have run without
+    // asking, whichever way it went; the unasked `Read` is.
+    release(&hold);
+    let all = events.wait_for("TurnEnded", is_turn_ended);
+    let ran: Vec<&str> = all
+        .iter()
+        .filter_map(|e| match e {
+            Event::RanWithoutAsking { call, .. } => Some(call.0.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ran, ["toolu_ran"]);
+}
+
+#[test]
+fn an_allowed_request_is_the_execution() {
+    let dirs = Dirs::new("allowed");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs).env(
+        "FAKE_CLAUDE_HOLD",
+        dirs.base.join("release").to_str().unwrap(),
+    );
+    let session = start_with(&backend, &dirs, &events, gate_with(Arc::new(Allows)));
+    let (turn, hold) = held_turn(&dirs, session.as_ref(), &events);
+
+    let reply = ask(
+        &socket_of(&dirs, session.as_ref()),
+        &bash_request("toolu_denied", "ls"),
+    );
+    assert_eq!(reply, r#"{"behavior":"allow"}"#);
+    let all = events.wait_for("ApprovalResolved", |e| {
+        matches!(e, Event::ApprovalResolved { .. })
+    });
+    assert!(matches!(
+        all.last(),
+        Some(Event::ApprovalResolved { turn: t, allowed: true, .. }) if *t == turn
+    ));
+    release(&hold);
+    events.wait_for("TurnEnded", is_turn_ended);
+}
+
+#[test]
+fn a_tool_without_a_door_is_denied_before_the_gate() {
+    let dirs = Dirs::new("no-door");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs).env(
+        "FAKE_CLAUDE_HOLD",
+        dirs.base.join("release").to_str().unwrap(),
+    );
+    // Would allow — and is never asked.
+    let session = start_with(&backend, &dirs, &events, gate_with(Arc::new(Allows)));
+    let (_, hold) = held_turn(&dirs, session.as_ref(), &events);
+    let socket = socket_of(&dirs, session.as_ref());
+
+    let reply = ask(
+        &socket,
+        r#"{"tool_name":"Write","input":{"file_path":"a","content":"b"},"tool_use_id":"toolu_ran"}"#,
+    );
+    assert_eq!(
+        reply,
+        r#"{"behavior":"deny","message":"stanchion: Write cannot be approved through this backend yet"}"#
+    );
+    let all = events.wait_for(
+        "Diagnostic",
+        |e| matches!(e, Event::Diagnostic { text } if text.contains("only Bash reaches the gate")),
+    );
+    assert!(!all
+        .iter()
+        .any(|e| matches!(e, Event::ApprovalRequested { .. })));
+
+    // Malformed requests, and one that names no call: denied, logged, nothing asked.
+    assert_eq!(
+        ask(&socket, "not json"),
+        r#"{"behavior":"deny","message":"stanchion: malformed request: not JSON"}"#
+    );
+    assert_eq!(
+        ask(&socket, r#"{"tool_name":"Bash","input":{}}"#),
+        r#"{"behavior":"deny","message":"stanchion: malformed request: tool_name or tool_use_id missing"}"#
+    );
+    assert_eq!(
+        ask(
+            &socket,
+            r#"{"tool_name":"Bash","input":{},"tool_use_id":"toolu_x"}"#
+        ),
+        r#"{"behavior":"deny","message":"stanchion: malformed request: Bash input without a command"}"#
+    );
+    events.wait_for(
+        "Diagnostic",
+        |e| matches!(e, Event::Diagnostic { text } if text.contains("without a command")),
+    );
+    release(&hold);
+    let all = events.wait_for("TurnEnded", is_turn_ended);
+    assert!(!all
+        .iter()
+        .any(|e| matches!(e, Event::ApprovalRequested { .. })));
+    // The asked-at-the-door `Read` was denied, not run: it is not claimed either way
+    // beyond what `permission_denials` says (the fake lists only `toolu_denied`).
+    assert!(!all
+        .iter()
+        .any(|e| matches!(e, Event::RanWithoutAsking { call, .. } if call.0 == "toolu_ran")));
+}
+
+#[test]
+fn a_request_outside_a_turn_is_denied() {
+    let dirs = Dirs::new("no-turn");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs);
+    let session = start_with(&backend, &dirs, &events, gate_with(Arc::new(Allows)));
+    let reply = ask(
+        &socket_of(&dirs, session.as_ref()),
+        &bash_request("toolu_1", "ls"),
+    );
+    assert_eq!(
+        reply,
+        r#"{"behavior":"deny","message":"stanchion: no turn is open"}"#
+    );
+    events.wait_for(
+        "Diagnostic",
+        |e| matches!(e, Event::Diagnostic { text } if text.contains("outside a turn")),
+    );
+}
+
+#[test]
+fn the_attachments_end_withdraws_a_pending_request_and_unlinks_the_socket() {
+    let dirs = Dirs::new("withdrawn");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs).env(
+        "FAKE_CLAUDE_HOLD",
+        dirs.base.join("release").to_str().unwrap(),
+    );
+    let holds = Arc::new(Holds::default());
+    let session = start_with(&backend, &dirs, &events, gate_with(holds.clone()));
+    let (_, _hold) = held_turn(&dirs, session.as_ref(), &events);
+    let socket = socket_of(&dirs, session.as_ref());
+    assert!(socket.exists());
+
+    // The request is pending in a dialog nobody answers.
+    let asker = {
+        let socket = socket.clone();
+        thread::spawn(move || ask(&socket, &bash_request("toolu_denied", "rm -rf /")))
+    };
+    events.wait_for("ApprovalRequested", |e| {
+        matches!(e, Event::ApprovalRequested { .. })
+    });
+
+    session.terminate().unwrap();
+    let all = events.wait_for("Exited", is_exited);
+    // The dialog was dismissed, the CLI got its deny, and `Exited` stayed last.
+    assert_eq!(
+        asker.join().unwrap(),
+        r#"{"behavior":"deny","message":"stanchion: refused: request withdrawn"}"#
+    );
+    assert_eq!(holds.dismissed.load(Ordering::SeqCst), 1);
+    thread::sleep(Duration::from_millis(100));
+    let after = events.all();
+    assert_eq!(after.len(), all.len(), "{after:#?}");
+    assert!(is_exited(after.last().unwrap()));
+    assert!(!socket.exists());
+    assert!(UnixStream::connect(&socket).is_err());
+    drop(holds);
+}
+
+#[test]
+fn the_socket_directory_is_private_and_the_socket_is_named_after_the_attachment() {
+    let dirs = Dirs::new("socket-dir");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs);
+    let session = start(&backend, &dirs, &events);
+    let socket = socket_of(&dirs, session.as_ref());
+    assert!(socket.exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(&dirs.sockets)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+    // Named in the configuration the CLI was given, which is the one thing that ties
+    // the CLI's helper to this attachment's socket.
+    let deadline = Instant::now() + WAIT;
+    while !dirs.state().contains("args=") && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let named = format!(
+        "\"args\":[\"{}\"]",
+        socket.canonicalize().unwrap().display()
+    );
+    assert!(
+        dirs.state().contains(&named),
+        "{named} not in {}",
+        dirs.state()
+    );
+    drop(session);
+    assert!(!socket.exists());
+}
+
+#[test]
+fn a_socket_path_that_does_not_fit_cannot_start() {
+    let dirs = Dirs::new("long");
+    let long = dirs.base.join("x".repeat(120));
+    let backend = ClaudeCode::new(
+        FAKE,
+        ConfigRoot::new(&dirs.root).unwrap(),
+        HELPER,
+        SocketDir::new(&long).unwrap(),
+    );
+    let err = backend
+        .start(Start {
+            conversation: ConversationId(1),
+            account: account(),
+            workspace_root: dirs.workspace.clone(),
+            gate: gate(),
+            events: Arc::new(Recorder::default()),
+        })
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        matches!(err, BackendError::CannotStart(ref why) if why.contains("bind")),
+        "{err}"
     );
 }
