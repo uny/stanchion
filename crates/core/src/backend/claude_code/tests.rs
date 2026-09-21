@@ -869,6 +869,30 @@ fn a_sink_may_drop_the_session_from_inside_event_on_the_reading_thread() {
 }
 
 #[test]
+fn a_line_past_the_cap_is_dropped_and_the_next_one_is_read() {
+    let mut input = b"first\n".to_vec();
+    input.extend(std::iter::repeat_n(b'x', MAX_LINE + 1));
+    input.extend_from_slice(b"\nlast");
+    let mut reader = std::io::BufReader::with_capacity(8192, std::io::Cursor::new(input));
+    assert_eq!(read_bounded_line(&mut reader), Some(Ok(b"first".to_vec())));
+    assert_eq!(
+        read_bounded_line(&mut reader),
+        Some(Err(format!(
+            "line of {} bytes dropped: longer than {MAX_LINE}",
+            MAX_LINE + 1
+        )))
+    );
+    assert_eq!(read_bounded_line(&mut reader), Some(Ok(b"last".to_vec())));
+    assert_eq!(read_bounded_line(&mut reader), None);
+
+    let mut exact = std::io::BufReader::new(std::io::Cursor::new(vec![b'y'; MAX_LINE]));
+    assert_eq!(
+        read_bounded_line(&mut exact).unwrap().unwrap().len(),
+        MAX_LINE
+    );
+}
+
+#[test]
 fn a_missing_binary_cannot_start() {
     let dirs = Dirs::new("missing");
     let backend = ClaudeCode::new(

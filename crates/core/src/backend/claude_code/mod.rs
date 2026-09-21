@@ -99,6 +99,12 @@ const MEASURED_ON: &str = "claude 2.1.266";
 /// to kill a process that closed stdout and stayed up.
 const REAP_POLL: Duration = Duration::from_millis(20);
 
+/// The most of one stdout or stderr line the reader keeps. A tool result the CLI relays
+/// is the largest line measured, well under a megabyte; a line past this is a process
+/// that is not the CLI, or one that has lost its framing, and it is dropped with a
+/// diagnostic rather than buffered without bound.
+const MAX_LINE: usize = 16 * 1024 * 1024;
+
 /// `system` subtypes that arrive continuously and carry nothing a log needs: progress the
 /// UI has from the events themselves, and per-turn bookkeeping. Measured on 2.1.266;
 /// anything not named here still reaches the log, so a new record is seen rather than
@@ -311,18 +317,24 @@ impl ClaudeCode {
         let stderr_reader = {
             let shared = shared.clone();
             thread::spawn(move || {
-                for line in BufReader::new(stderr).split(b'\n') {
-                    let Ok(line) = line else { break };
-                    shared.diagnostic(format!("stderr: {}", escape_inline(&line)));
+                let mut stderr = BufReader::new(stderr);
+                while let Some(line) = read_bounded_line(&mut stderr) {
+                    match line {
+                        Ok(line) => shared.diagnostic(format!("stderr: {}", escape_inline(&line))),
+                        Err(over) => shared.diagnostic(format!("stderr: {over}")),
+                    }
                 }
             })
         };
         let stdout_reader = {
             let shared = shared.clone();
             thread::spawn(move || {
-                for line in BufReader::new(stdout).split(b'\n') {
-                    let Ok(line) = line else { break };
-                    shared.on_line(&line);
+                let mut stdout = BufReader::new(stdout);
+                while let Some(line) = read_bounded_line(&mut stdout) {
+                    match line {
+                        Ok(line) => shared.on_line(&line),
+                        Err(over) => shared.diagnostic(over),
+                    }
                 }
                 let status = shared.reap();
                 let _ = stderr_reader.join();
@@ -923,6 +935,51 @@ fn signal_detail(_: ExitStatus) -> String {
 }
 
 /// The stream-json line for one user message.
+/// One line, without its terminator, or `Err` with a diagnostic for a line past
+/// [`MAX_LINE`] — the rest of which is consumed and discarded, so the framing recovers at
+/// the next newline. `None` at end of input, or on a read error, which ends the stream.
+fn read_bounded_line(reader: &mut impl BufRead) -> Option<Result<Vec<u8>, String>> {
+    let mut line = Vec::new();
+    let mut dropped = 0usize;
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(buf) => buf,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        };
+        if available.is_empty() {
+            // End of input; a last line without a newline is still a line.
+            return match (line.is_empty(), dropped) {
+                (true, 0) => None,
+                (_, 0) => Some(Ok(line)),
+                (_, n) => Some(Err(over_long(line.len() + n))),
+            };
+        }
+        let (chunk, done) = match available.iter().position(|&b| b == b'\n') {
+            Some(at) => (&available[..at], true),
+            None => (available, false),
+        };
+        let used = chunk.len() + usize::from(done);
+        if dropped > 0 || line.len() + chunk.len() > MAX_LINE {
+            dropped += chunk.len();
+        } else {
+            line.extend_from_slice(chunk);
+        }
+        reader.consume(used);
+        if done {
+            return Some(if dropped == 0 {
+                Ok(line)
+            } else {
+                Err(over_long(line.len() + dropped))
+            });
+        }
+    }
+}
+
+fn over_long(len: usize) -> String {
+    format!("line of {len} bytes dropped: longer than {MAX_LINE}")
+}
+
 fn user_line(text: &str) -> String {
     Value::Object(vec![
         ("type".into(), Value::String("user".into())),
