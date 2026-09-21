@@ -82,6 +82,8 @@ pub(super) const SERVER_NAME: &str = "stanchion";
 pub(super) const PROMPT_TOOL: &str = "mcp__stanchion__approve";
 /// How long an accepted connection has to send its request line.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How much of a request that is not JSON the diagnostic quotes.
+const UNPARSABLE_SHOWN: usize = 1024;
 
 /// The directory the per-attachment sockets live in. Created by the core with mode 0700
 /// and resolved, like [`super::ConfigRoot`]. A socket path is short on every platform
@@ -251,7 +253,12 @@ impl Shared {
             let stream = match listener.accept() {
                 Ok((stream, _)) => stream,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
+                Err(e) => {
+                    // From here every helper connection is refused, which the helper
+                    // turns into a deny; the core says so once rather than not at all.
+                    self.diagnostic_if_live(format!("approval socket stopped accepting: {e}"));
+                    break;
+                }
             };
             if self.approval.closed.load(Ordering::SeqCst) {
                 // The wake-up, or a request that arrived beside it; either way the
@@ -311,9 +318,12 @@ impl Shared {
             Ok(v) => v,
             Err(e) => {
                 self.deny_at_the_door(&mut reply, AtTheDoor::Malformed("not JSON"));
+                // The line may be anything up to the bound; the log gets its head.
+                let shown = line.len().min(UNPARSABLE_SHOWN);
                 self.diagnostic_if_live(format!(
-                    "approval request unparsable ({e}): {}",
-                    escape_inline(&line)
+                    "approval request unparsable ({e}): {}{}",
+                    escape_inline(&line[..shown]),
+                    if shown < line.len() { "…" } else { "" }
                 ));
                 return;
             }
