@@ -695,6 +695,20 @@ fn a_config_root_inside_the_workspace_or_around_it_is_refused() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn an_existing_root_is_tightened_to_0700() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dirs = Dirs::new("tighten");
+    std::fs::create_dir_all(&dirs.root).unwrap();
+    std::fs::set_permissions(&dirs.root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let root = ConfigRoot::new(&dirs.root).unwrap();
+    assert_eq!(
+        std::fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+}
+
 #[test]
 fn a_missing_binary_cannot_start() {
     let dirs = Dirs::new("missing");

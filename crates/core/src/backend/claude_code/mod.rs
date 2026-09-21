@@ -34,8 +34,9 @@
 //!
 //! # The config directory
 //!
-//! The core creates `<root>/<account>` with mode 0700 before the spawn (the CLI would
-//! otherwise create it 0755), passes it as `CLAUDE_CONFIG_DIR`, and never reads it (#41).
+//! The core creates `<root>/<account>` with mode 0700 before the spawn (the CLI creates
+//! most of what it puts inside 0755, and `.claude.json` 0600; the directory itself is the
+//! core's), passes it as `CLAUDE_CONFIG_DIR`, and never reads it (#41).
 //! [`ConfigRoot`] is a canonical path; `start` refuses a workspace root that contains it
 //! or is contained by it, so a directory the model can write to is never the directory
 //! the CLI reads hooks and permissions from. `--setting-sources user` is the second lever
@@ -131,6 +132,7 @@ fn dir_name(account: &str) -> String {
     out
 }
 
+/// Creates `path` with mode 0700, or tightens an existing directory to it.
 fn create_private_dir(path: &Path) -> io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
@@ -139,7 +141,17 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
         use std::os::unix::fs::DirBuilderExt as _;
         builder.mode(0o700);
     }
-    builder.create(path)
+    builder.create(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        if permissions.mode() & 0o777 != 0o700 {
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(path, permissions)?;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -340,8 +352,10 @@ struct Shared {
     child: Mutex<Child>,
     stdin: Mutex<Option<ChildStdin>>,
     /// Taken before `state` by everything that emits, and held across the emission, so
-    /// the sink sees events in the order the state changed. `usage` and `terminate` take
-    /// only `state`, so a sink may call them.
+    /// the sink sees events in the order the state changed. Events are delivered with
+    /// `state` held too: a sink must return without calling back into the session, or it
+    /// deadlocks on the delivering thread. A sink that needs the session's methods hands
+    /// the event to another thread first.
     emit: Mutex<()>,
     state: Mutex<State>,
 }
@@ -434,6 +448,9 @@ impl Shared {
             Some("assistant") => self.on_assistant(&mut state, &value),
             Some("user") => self.on_user(&state, &value),
             Some("result") => self.on_result(&mut state, &value),
+            // The acknowledgement of a control request `interrupt` sent; the turn's end is
+            // the `result` line that follows, and this carries nothing else.
+            Some("control_response") => {}
             other => self.events.event(Event::Diagnostic {
                 text: format!(
                     "unhandled line of type {}",
