@@ -40,6 +40,7 @@ use crate::consent::Consent;
 
 pub use crate::consent::request::Backend;
 
+pub mod claude_code;
 #[cfg(test)]
 mod tests;
 
@@ -77,9 +78,6 @@ pub struct SessionId {
 }
 
 impl SessionId {
-    // Called by a backend, and the first backend is #46; until it lands, only tests call
-    // this. The allow goes with the first caller.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(
         backend: Backend,
         account: AccountId,
@@ -150,9 +148,7 @@ mod lease {
     // run-is-a-value entry keeps out of process-wide state. The consent gate numbers its
     // runs per gate; these number turns and attachments per process, so the scopes differ
     // and neither reads the other.
-    #[cfg_attr(not(test), allow(dead_code))]
     static NEXT_TURN: AtomicU64 = AtomicU64::new(1);
-    #[cfg_attr(not(test), allow(dead_code))]
     static NEXT_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
 
     /// The lease a backend holds on the consent gate for one attachment. Registers the
@@ -170,8 +166,6 @@ mod lease {
         ended: Once,
     }
 
-    // As for `SessionId::new`: the callers are the backends, the first of which is #46.
-    #[cfg_attr(not(test), allow(dead_code))]
     impl Attachment {
         pub(crate) fn open(gate: Arc<Consent>, backend: Backend) -> Self {
             Attachment {
@@ -186,11 +180,15 @@ mod lease {
             self.id
         }
 
-        /// The consent run to bind requests to. Crate-private on purpose.
+        /// The consent run to bind requests to. Crate-private on purpose. The first
+        /// caller outside tests is the Claude Code approval slice (#46); until then the
+        /// allow goes with it.
+        #[cfg_attr(not(test), allow(dead_code))]
         pub(crate) fn run(&self) -> RunId {
             self.run
         }
 
+        #[cfg_attr(not(test), allow(dead_code))]
         pub(crate) fn gate(&self) -> &Consent {
             &self.gate
         }

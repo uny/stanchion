@@ -744,7 +744,8 @@ not a second channel — and that lands with the first backend that emits the ev
 Claude Code approval slice), not here. The runtime a backend drives its process from is
 likewise not decided here: the contract delivers events through a sink the caller supplies,
 as the presenter does, and a threaded and an executor-driven implementation both fit; the
-Claude Code slice decides for itself and says why. Whether hook failure, which #42 measured
+Claude Code slice decides for itself and says why (it chose threads; the reasons are in
+`crates/core/src/backend/claude_code`, and they are that backend's, not the contract's). Whether hook failure, which #42 measured
 as silent and fail-open, can be made to surface as `RanWithoutAsking` at all, or only as a
 `--debug` log the core tails, is the same slice's to measure. And the gate's own surface is
 wider than the session's: `Consent::register_run` and `Consent::ask` are `pub` because the

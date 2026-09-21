@@ -121,6 +121,30 @@ answered into the wrong process. A conversation therefore sees several consent r
 life, one per attachment, and the approval record keys on that. Turn ids come from one
 counter for the process, so a turn is unique across attachments, not merely within one.
 
+**The Claude Code backend** (`crates/core/src/backend/claude_code`, #46) is the first
+implementation: `claude -p` with stream-json in both directions, one process per
+attachment, supervised from two plain threads (stdout, stderr) with the caller's thread
+writing — no executor, since one line-oriented pipe each way has nothing to share a
+reactor with. The core creates `<config root>/<account>` mode 0700 before the spawn,
+passes it as `CLAUDE_CONFIG_DIR`, never reads it, and refuses a workspace root that
+overlaps the config root in either direction after resolving both (#41's "config dir
+inside the workspace root fails" test lives there); `--setting-sources user` keeps a
+workspace's own `.claude/` out of the CLI's settings (#42). Each stream-json line
+the backend reads maps to events on its own, with the CLI's per-second progress records
+dropped, through a small read-only JSON parser of the crate's own — the core
+links no serialisation library, by the rule in `crates/core/src/lib.rs`. What the module
+measured beyond #42, signed in and not: `system/init` arrives after an input, not at
+startup, and repeats every turn; a process outlives its `result` lines until stdin
+closes; a config directory other than the user's own does not see the Keychain sign-in,
+which surfaces on the first turn, not at `start`; and the `result` line's
+`permission_denials` names the calls the CLI refused by its own rules. Approval is not in this slice: no `--permission-prompt-tool` is passed, the CLI
+denies non-interactively, and every call its own rules allowed on a turn that ran to its
+end is reported as `RanWithoutAsking` from the `result` line's `permission_denials`. `after_interrupt` is
+`Unmeasured` — `interrupt` sends the stream-json control request rather than the SIGINT
+#42 measured — until the resume slice measures it. CI drives the backend through
+`crates/core/tests/fixtures/fake-claude.sh`, a shell script that emits the measured
+shapes; the real binary is never run in CI.
+
 ## The agent loop
 
 One loop, parameterised by a per-model profile.
