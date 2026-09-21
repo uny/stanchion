@@ -24,6 +24,8 @@
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use stanchion_core::backend::claude_code::json::Value;
@@ -47,35 +49,48 @@ fn main() {
         eprintln!("usage: stanchion-prompt-helper <socket>");
         std::process::exit(2);
     };
-    let socket = std::path::PathBuf::from(socket);
+    let socket = Arc::new(std::path::PathBuf::from(socket));
     let stdin = io::stdin();
     let mut reader = BufReader::new(stdin.lock());
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
+    // One writer for every thread: a call is answered on a thread of its own, so that a
+    // dialog the user is looking at does not stall the CLI's next message — a `ping`,
+    // another call — behind it. Lines are whole, so interleaving is at line level.
+    let out = Arc::new(Mutex::new(io::stdout()));
+    // Calls still being answered when stdin closes are answered before exit: the CLI
+    // closes stdin when it is done with the server, and a client that pipes its
+    // messages in one go (the test fixture) closes it before the reply is out.
+    let mut calls: Vec<thread::JoinHandle<()>> = Vec::new();
     let mut line = Vec::new();
     loop {
         line.clear();
-        match (&mut reader)
+        let read = (&mut reader)
             .take(MAX_LINE as u64 + 1)
-            .read_until(b'\n', &mut line)
-        {
-            Ok(0) => return,
-            Ok(_) => {}
+            .read_until(b'\n', &mut line);
+        match read {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => return,
+            Ok(0) | Err(_) => {
+                for call in calls {
+                    let _ = call.join();
+                }
+                return;
+            }
+            Ok(_) => {}
         }
         if line.len() > MAX_LINE {
-            // Consume the rest of the line, then say what happened.
-            let mut rest = Vec::new();
-            let _ = reader.read_until(b'\n', &mut rest);
-            respond(&mut out, error(Value::Null, -32600, "line too long"));
+            // Past the cap. If the cap cut the line short its tail is still unread and
+            // is discarded up to the newline, a buffer at a time, so the next line is
+            // read from its start; nothing of it is kept.
+            if line.last() != Some(&b'\n') && !discard_line(&mut reader) {
+                return;
+            }
+            respond(&out, error(Value::Null, -32600, "line too long"));
             continue;
         }
         let text = String::from_utf8_lossy(&line);
         let message = match Value::parse(text.trim_end()) {
             Ok(v) => v,
             Err(_) => {
-                respond(&mut out, error(Value::Null, -32700, "parse error"));
+                respond(&out, error(Value::Null, -32700, "parse error"));
                 continue;
             }
         };
@@ -86,23 +101,49 @@ fn main() {
         };
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let params = message.get("params");
-        let response = match method {
-            "initialize" => result(id, initialize_result(params)),
-            "ping" => result(id, Value::Object(Vec::new())),
-            "tools/list" => result(id, tools_list()),
+        match method {
+            "initialize" => respond(&out, result(id, initialize_result(params))),
+            "ping" => respond(&out, result(id, Value::Object(Vec::new()))),
+            "tools/list" => respond(&out, result(id, tools_list())),
             "tools/call" => match params.and_then(|p| p.get("name")).and_then(Value::as_str) {
                 Some("approve") => {
                     let arguments = params
                         .and_then(|p| p.get("arguments"))
                         .cloned()
                         .unwrap_or(Value::Object(Vec::new()));
-                    result(id, text_result(&relay(&socket, &arguments)))
+                    let (socket, out) = (socket.clone(), out.clone());
+                    calls.retain(|c| !c.is_finished());
+                    calls.push(thread::spawn(move || {
+                        let reply = relay(&socket, &arguments);
+                        respond(&out, result(id, text_result(&reply)));
+                    }));
                 }
-                _ => error(id, -32602, "unknown tool"),
+                _ => respond(&out, error(id, -32602, "unknown tool")),
             },
-            _ => error(id, -32601, "method not found"),
+            _ => respond(&out, error(id, -32601, "method not found")),
+        }
+    }
+}
+
+/// Reads and drops the rest of the current line. `false` at end of input.
+fn discard_line(reader: &mut impl BufRead) -> bool {
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(buf) => buf,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return false,
         };
-        respond(&mut out, response);
+        if available.is_empty() {
+            return false;
+        }
+        let (used, done) = match available.iter().position(|&b| b == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (available.len(), false),
+        };
+        reader.consume(used);
+        if done {
+            return true;
+        }
     }
 }
 
@@ -206,6 +247,7 @@ fn tools_list() -> Value {
                         Value::Array(vec![
                             Value::String("tool_name".into()),
                             Value::String("input".into()),
+                            Value::String("tool_use_id".into()),
                         ]),
                     ),
                 ]),
@@ -246,14 +288,16 @@ fn error(id: Value, code: i64, message: &str) -> Value {
     ])
 }
 
-fn respond(out: &mut impl Write, response: Value) {
+fn respond(out: &Mutex<io::Stdout>, response: Value) {
     let mut line = response.to_json();
     line.push('\n');
+    let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
     if out
         .write_all(line.as_bytes())
         .and_then(|()| out.flush())
         .is_err()
     {
+        // The CLI is gone; so is any reason to be here.
         std::process::exit(0);
     }
 }

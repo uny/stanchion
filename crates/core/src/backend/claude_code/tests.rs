@@ -1362,6 +1362,41 @@ fn the_turns_end_cancels_a_request_still_pending_for_it() {
 }
 
 #[test]
+fn requests_past_the_in_flight_bound_are_denied_at_the_door() {
+    use std::io::{BufRead as _, BufReader};
+    let dirs = Dirs::new("bound");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs);
+    let session = start(&backend, &dirs, &events);
+    let socket = socket_of(&dirs, session.as_ref());
+    // Sixteen connections that send nothing hold sixteen handlers; the next is refused
+    // without a handler at all.
+    let held: Vec<UnixStream> = (0..16)
+        .map(|_| UnixStream::connect(&socket).unwrap())
+        .collect();
+    let deadline = Instant::now() + WAIT;
+    let reply = loop {
+        let stream = UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut reply = String::new();
+        // A handler may not have counted itself yet; until it has, this one is accepted
+        // and waits for a line that never comes.
+        if BufReader::new(&stream).read_line(&mut reply).is_ok() && !reply.is_empty() {
+            break reply;
+        }
+        assert!(Instant::now() < deadline, "never refused");
+        drop(stream);
+    };
+    assert_eq!(
+        reply.trim_end(),
+        r#"{"behavior":"deny","message":"stanchion: too many requests at once"}"#
+    );
+    drop(held);
+}
+
+#[test]
 fn the_socket_directory_is_private_and_the_socket_is_named_after_the_attachment() {
     let dirs = Dirs::new("socket-dir");
     let events = Arc::new(Recorder::default());

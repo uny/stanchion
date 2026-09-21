@@ -190,44 +190,128 @@ fn an_allow_through_the_helper_is_the_execution() {
     assert_eq!(ran_without_asking(&all), ["toolu_ran"]);
 }
 
-#[test]
-fn the_helper_denies_on_its_own_when_the_core_is_unreachable() {
+/// Runs the helper on `input` with `socket` as its argument; returns its stdout lines.
+fn helper(socket: &str, input: &[u8]) -> Vec<String> {
     use std::io::Write as _;
     use std::process::{Command, Stdio};
     let mut helper = Command::new(HELPER)
-        .arg("/nonexistent/stanchion.sock")
+        .arg(socket)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    helper
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(
-            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}
-{"jsonrpc":"2.0","method":"notifications/initialized"}
-{"jsonrpc":"2.0","id":2,"method":"tools/list"}
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"approve","arguments":{"tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_1"}}}
-{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"other","arguments":{}}}
-"#,
-        )
-        .unwrap();
+    helper.stdin.take().unwrap().write_all(input).unwrap();
     let out = helper.wait_with_output().unwrap();
     assert!(out.status.success());
-    let lines: Vec<&str> = std::str::from_utf8(&out.stdout).unwrap().lines().collect();
-    assert_eq!(lines.len(), 4, "{lines:#?}");
-    assert!(
-        lines[0].contains(r#""protocolVersion":"2025-11-25""#),
-        "{}",
-        lines[0]
+    std::str::from_utf8(&out.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+fn line_with_id<'a>(lines: &'a [String], id: &str) -> &'a str {
+    lines
+        .iter()
+        .find(|l| l.contains(&format!("\"id\":{id},")))
+        .unwrap_or_else(|| panic!("no response with id {id} in {lines:#?}"))
+}
+
+#[test]
+fn the_helper_denies_on_its_own_when_the_core_is_unreachable() {
+    let lines = helper(
+        "/nonexistent/stanchion.sock",
+        br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":"two","method":"tools/list"}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"approve","arguments":{"tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_1"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"other","arguments":{}}}
+{"jsonrpc":"2.0","id":5,"method":"ping"}
+"#,
     );
-    assert!(lines[1].contains(r#""name":"approve""#), "{}", lines[1]);
+    assert_eq!(lines.len(), 5, "{lines:#?}");
     assert!(
-        lines[2].contains(r#"{\"behavior\":\"deny\",\"message\":\"stanchion: core unreachable"#),
-        "{}",
-        lines[2]
+        line_with_id(&lines, "1").contains(r#""protocolVersion":"2025-11-25""#),
+        "{lines:#?}"
     );
-    assert!(lines[3].contains(r#""code":-32602"#), "{}", lines[3]);
+    let list = line_with_id(&lines, "\"two\"");
+    assert!(list.contains(r#""name":"approve""#), "{list}");
+    assert!(
+        list.contains(r#""required":["tool_name","input","tool_use_id"]"#),
+        "{list}"
+    );
+    assert!(
+        line_with_id(&lines, "3")
+            .contains(r#"{\"behavior\":\"deny\",\"message\":\"stanchion: core unreachable"#),
+        "{lines:#?}"
+    );
+    assert!(line_with_id(&lines, "4").contains(r#""code":-32602"#));
+    assert_eq!(
+        line_with_id(&lines, "5"),
+        r#"{"jsonrpc":"2.0","id":5,"result":{}}"#
+    );
+}
+
+#[test]
+fn the_helper_recovers_from_a_line_past_the_cap() {
+    // 16 MiB of one line, cut by the cap mid-way; the request after it is read whole.
+    let mut input = Vec::new();
+    input.extend_from_slice(br#"{"jsonrpc":"2.0","id":1,"method":"ping","params":{"pad":""#);
+    input.resize(input.len() + 17 * 1024 * 1024, b'x');
+    input.extend_from_slice(b"\"}}\n");
+    input.extend_from_slice(br#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#);
+    input.push(b'\n');
+    let lines = helper("/nonexistent/stanchion.sock", &input);
+    assert_eq!(lines.len(), 2, "{lines:#?}");
+    assert!(lines[0].contains("line too long"), "{}", lines[0]);
+    assert_eq!(lines[1], r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+}
+
+#[test]
+fn the_helper_answers_calls_as_the_core_does_not_in_the_order_asked() {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::os::unix::net::UnixListener;
+    let dirs = Dirs::new();
+    std::fs::create_dir_all(&dirs.sockets).unwrap();
+    let socket = dirs.sockets.join("s.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    // A stand-in core that takes both requests, then answers the second before the first.
+    let core = std::thread::spawn(move || {
+        let mut conns = Vec::new();
+        for _ in 0..2 {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            conns.push((stream, line));
+        }
+        conns.sort_by(|a, b| b.1.cmp(&a.1));
+        for (mut stream, line) in conns {
+            let id = if line.contains("toolu_a") { "a" } else { "b" };
+            stream
+                .write_all(format!("{{\"behavior\":\"deny\",\"message\":\"{id}\"}}\n").as_bytes())
+                .unwrap();
+        }
+    });
+    let lines = helper(
+        socket.to_str().unwrap(),
+        br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"approve","arguments":{"tool_name":"Bash","input":{"command":"a"},"tool_use_id":"toolu_a"}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"approve","arguments":{"tool_name":"Bash","input":{"command":"b"},"tool_use_id":"toolu_b"}}}
+{"jsonrpc":"2.0","id":3,"method":"ping"}
+"#,
+    );
+    core.join().unwrap();
+    assert_eq!(lines.len(), 3, "{lines:#?}");
+    // The ping was answered while both calls were pending; the calls were answered as
+    // the core answered them (b first), each to its own id.
+    assert!(lines[0].contains(r#""id":3,"#), "{lines:#?}");
+    assert!(
+        line_with_id(&lines, "1").contains(r#"\"message\":\"a\""#),
+        "{lines:#?}"
+    );
+    assert!(
+        line_with_id(&lines, "2").contains(r#"\"message\":\"b\""#),
+        "{lines:#?}"
+    );
+    assert!(lines[1].contains(r#""id":2,"#), "{lines:#?}");
 }

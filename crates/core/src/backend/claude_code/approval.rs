@@ -56,8 +56,8 @@ use std::collections::HashSet;
 use std::io::{self, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -100,9 +100,19 @@ impl SocketDir {
 /// connect from the CLI's first request; closed and unlinked when the attachment ends.
 pub(super) struct Listener {
     path: PathBuf,
-    listener: UnixListener,
+    /// Taken by the accepting thread, which owns the descriptor from then on and closes
+    /// it when it exits — so a connection queued at the end is refused, not left hanging
+    /// on a descriptor that lives as long as the attachment's last reference.
+    listener: Mutex<Option<UnixListener>>,
     closed: AtomicBool,
+    /// Requests being handled right now. The helper is the one expected client, and it
+    /// asks once per call; the bound is against a process on the user's side of the
+    /// socket directory that is not the helper.
+    in_flight: AtomicUsize,
 }
+
+/// The most requests handled at once; past it a request is denied at the door.
+const MAX_IN_FLIGHT: usize = 16;
 
 impl Listener {
     pub(super) fn bind(dir: &SocketDir, attachment: AttachmentId) -> Result<Self, BackendError> {
@@ -118,8 +128,9 @@ impl Listener {
             .map_err(|e| BackendError::CannotStart(format!("bind {}: {e}", path.display())))?;
         Ok(Listener {
             path,
-            listener,
+            listener: Mutex::new(Some(listener)),
             closed: AtomicBool::new(false),
+            in_flight: AtomicUsize::new(0),
         })
     }
 
@@ -128,7 +139,9 @@ impl Listener {
     }
 
     /// Stops accepting and unlinks the socket. Idempotent. Wakes the accepting thread by
-    /// connecting to it once, which is the one way to end a blocking `accept`.
+    /// connecting to it once, which is the one way to end a blocking `accept`; that
+    /// thread then drains what else is queued, answers it *deny*, and closes the
+    /// descriptor.
     pub(super) fn close(&self) {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
@@ -217,23 +230,52 @@ enum AtTheDoor {
     Malformed(&'static str),
     OutsideATurn,
     Ended,
+    TooMany,
     NotApprovable(String),
 }
 
 impl Shared {
-    /// Accepts connections until the listener is closed. Runs on its own thread.
+    /// Accepts connections until the listener is closed, then answers what is still
+    /// queued and closes the descriptor. Runs on its own thread.
     pub(super) fn serve_approvals(self: Arc<Self>) {
+        let Some(listener) = self.approval.listener.lock().unwrap().take() else {
+            return;
+        };
         loop {
-            let stream = match self.approval.listener.accept() {
+            let stream = match listener.accept() {
                 Ok((stream, _)) => stream,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             };
             if self.approval.closed.load(Ordering::SeqCst) {
+                // The wake-up, or a request that arrived beside it; either way the
+                // attachment is over. What is queued behind it gets the same answer.
+                drop(stream);
+                if listener.set_nonblocking(true).is_ok() {
+                    while let Ok((stream, _)) = listener.accept() {
+                        let mut reply = SocketReply {
+                            stream: &stream,
+                            error: None,
+                        };
+                        self.deny_at_the_door(&mut reply, AtTheDoor::Ended);
+                    }
+                }
                 break;
             }
+            if self.approval.in_flight.fetch_add(1, Ordering::SeqCst) >= MAX_IN_FLIGHT {
+                self.approval.in_flight.fetch_sub(1, Ordering::SeqCst);
+                let mut reply = SocketReply {
+                    stream: &stream,
+                    error: None,
+                };
+                self.deny_at_the_door(&mut reply, AtTheDoor::TooMany);
+                continue;
+            }
             let shared = self.clone();
-            thread::spawn(move || shared.handle_approval(stream));
+            thread::spawn(move || {
+                shared.handle_approval(stream);
+                shared.approval.in_flight.fetch_sub(1, Ordering::SeqCst);
+            });
         }
     }
 
@@ -363,14 +405,29 @@ impl Shared {
             &mut reply,
             &mut |rendered: &Rendered| {
                 invocation = Some(rendered.invocation);
-                // Recorded on the turn so that the turn's end cancels it: a dialog for a
-                // call the CLI has already closed must not be answered into nothing.
-                if let Some(open) = self.state.lock().unwrap().turn.as_mut() {
-                    if open.id == turn {
-                        open.pending.push(rendered.invocation);
+                // Under `emit`, so this is atomic with the turn's end: `on_result` takes
+                // the turn and delivers `TurnEnded` under the same lock. While the turn
+                // is still open the invocation is recorded on it, so that its end cancels
+                // the dialog; if it ended in the meantime — the CLI closed the call
+                // before the gate got to it — the request is withdrawn here, and no
+                // event names it.
+                let _emit = self.emit.lock().unwrap();
+                let live = {
+                    let mut state = self.state.lock().unwrap();
+                    let ended = state.ended;
+                    match state.turn.as_mut() {
+                        Some(open) if !ended && open.id == turn => {
+                            open.pending.push(rendered.invocation);
+                            true
+                        }
+                        _ => false,
                     }
+                };
+                if !live {
+                    self.lease.gate().cancel(rendered.invocation);
+                    return;
                 }
-                self.emit_if_live(Event::ApprovalRequested {
+                self.events.event(Event::ApprovalRequested {
                     turn,
                     call: call.clone(),
                     invocation: rendered.invocation,
@@ -413,6 +470,7 @@ impl Shared {
             AtTheDoor::Malformed(what) => format!("stanchion: malformed request: {what}"),
             AtTheDoor::OutsideATurn => "stanchion: no turn is open".into(),
             AtTheDoor::Ended => "stanchion: the attachment has ended".into(),
+            AtTheDoor::TooMany => "stanchion: too many requests at once".into(),
             AtTheDoor::NotApprovable(name) => {
                 format!("stanchion: {name} cannot be approved through this backend yet")
             }
