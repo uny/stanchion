@@ -904,6 +904,17 @@ fn a_line_past_the_cap_is_dropped_and_the_next_one_is_read() {
 }
 
 #[test]
+fn a_credential_in_the_environment_is_not_passed_on() {
+    let dirs = Dirs::new("no-credential");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs).env("ANTHROPIC_API_KEY", "sk-example");
+    let session = start(&backend, &dirs, &events);
+    session.send(UserInput { text: "hi".into() }).unwrap();
+    events.wait_for("TurnEnded", is_turn_ended);
+    assert!(dirs.state().contains("api_key=unset\n"), "{}", dirs.state());
+}
+
+#[test]
 fn a_missing_binary_cannot_start() {
     let dirs = Dirs::new("missing");
     let backend = ClaudeCode::new(

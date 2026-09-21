@@ -99,6 +99,13 @@ const MEASURED_ON: &str = "claude 2.1.266";
 /// to kill a process that closed stdout and stayed up.
 const REAP_POLL: Duration = Duration::from_millis(20);
 
+/// Environment variables the CLI reads a credential from, never passed on to it.
+const INHERITED_CREDENTIALS: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+];
+
 /// The most of one stdout or stderr line the reader keeps. A tool result the CLI relays
 /// is the largest line measured, well under a megabyte; a line past this is a process
 /// that is not the CLI, or one that has lost its framing, and it is dropped with a
@@ -273,7 +280,14 @@ impl ClaudeCode {
             ])
             .current_dir(&cwd)
             .env("CLAUDE_CONFIG_DIR", &config_dir)
-            .envs(self.env.iter().map(|(k, v)| (k, v)))
+            .envs(self.env.iter().map(|(k, v)| (k, v)));
+        // The rest of the environment is inherited, but not a credential: one in the
+        // core's own environment would sign every account's CLI in as the same principal,
+        // around the config directory that is meant to keep them apart.
+        for key in INHERITED_CREDENTIALS {
+            command.env_remove(key);
+        }
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

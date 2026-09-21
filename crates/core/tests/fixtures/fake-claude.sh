@@ -51,6 +51,7 @@ if [ -n "${FAKE_CLAUDE_STDERR:-}" ]; then
   printf '%s\n' "$FAKE_CLAUDE_STDERR" >&2
 fi
 note "config_dir=${CLAUDE_CONFIG_DIR:-}"
+note "api_key=${ANTHROPIC_API_KEY:-unset}"
 note "args=$*"
 if [ "${FAKE_CLAUDE_INIT_FIRST:-0}" = "1" ]; then
   emit_init
