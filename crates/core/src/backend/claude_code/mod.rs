@@ -55,8 +55,9 @@
 //! the ones a call itself produces, as the contract allows; an `emit` lock keeps the
 //! order on the sink the same as the order they were decided in, and the state lock is
 //! released before the sink is called, so a sink may read `usage` or `terminate` from
-//! inside `event`. One `assistant` line is one [`Event::MessageComplete`], its text
-//! blocks joined; a tool call is reported from that line's `tool_use` block.
+//! inside `event`. One `assistant` line with text is one [`Event::MessageComplete`],
+//! its text blocks concatenated; a line of `tool_use` blocks alone completes no message,
+//! and a tool call is reported from that line's `tool_use` block.
 //!
 //! # The config directory
 //!
@@ -645,16 +646,14 @@ impl Shared {
             });
             return;
         };
-        // One message per `assistant` line: its text blocks joined, in order, so the
-        // partials that preceded them are reset once, not per block.
+        // One message per `assistant` line: its text blocks concatenated, in order, with
+        // nothing between them — the deltas that streamed them had nothing between them
+        // either, and the contract says the partials add up to the complete message.
         let mut text = String::new();
         for block in blocks {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
                     if let Some(t) = block.get("text").and_then(Value::as_str) {
-                        if !text.is_empty() {
-                            text.push('\n');
-                        }
                         text.push_str(t);
                     }
                 }
