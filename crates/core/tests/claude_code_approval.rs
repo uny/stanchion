@@ -97,6 +97,20 @@ impl Dirs {
     }
 }
 
+/// The fake with `FAKE_CLAUDE_ASK=1` in its own environment, via a wrapper script: set
+/// on this process instead, it would race the other tests' spawns.
+fn asking_fake(dirs: &Dirs) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = dirs.base.join("asking-fake.sh");
+    std::fs::write(
+        &path,
+        format!("#!/bin/sh\nFAKE_CLAUDE_ASK=1 exec '{FAKE}' \"$@\"\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    path
+}
+
 impl Drop for Dirs {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.base);
@@ -107,11 +121,9 @@ impl Drop for Dirs {
 /// One held turn of the fake with the helper in the loop; returns every event up to the
 /// turn's end.
 fn one_turn(answer: Answer) -> Vec<Event> {
-    // Read by the fake; the same for every test in this binary.
-    std::env::set_var("FAKE_CLAUDE_ASK", "1");
     let dirs = Dirs::new();
     let backend = ClaudeCode::new(
-        FAKE,
+        asking_fake(&dirs),
         ConfigRoot::new(dirs.base.join("cfg")).unwrap(),
         HELPER,
         SocketDir::new(&dirs.sockets).unwrap(),
