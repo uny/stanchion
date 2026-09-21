@@ -132,10 +132,11 @@ inside the workspace root fails" test lives there); `--setting-sources user` kee
 workspace's own `.claude/` out of the CLI's settings (#42). Stream-json lines map to
 events one to one, through a small read-only JSON parser of the crate's own — the core
 links no serialisation library, by the rule in `crates/core/src/lib.rs`. What the module
-measured beyond #42: `system/init` arrives after the first input, not at startup; a
-process outlives its `result` lines until stdin closes; and a config directory other than
-the user's own does not see the Keychain sign-in, which surfaces on the first turn, not at
-`start`. Approval is not in this slice: no `--permission-prompt-tool` is passed, the CLI
+measured beyond #42, signed in and not: `system/init` arrives after an input, not at
+startup, and repeats every turn; a process outlives its `result` lines until stdin
+closes; a config directory other than the user's own does not see the Keychain sign-in,
+which surfaces on the first turn, not at `start`; and the `result` line's
+`permission_denials` names the calls the CLI refused by its own rules. Approval is not in this slice: no `--permission-prompt-tool` is passed, the CLI
 denies non-interactively, and every call its own rules allowed is reported as
 `RanWithoutAsking` from the `result` line's `permission_denials`. `after_interrupt` is
 `Unmeasured` — `interrupt` sends the stream-json control request rather than the SIGINT

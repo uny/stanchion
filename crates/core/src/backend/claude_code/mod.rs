@@ -7,20 +7,41 @@
 //!
 //! # What was measured (`claude` 2.1.266, #42 and this module's own runs)
 //!
-//! - `system/init`, which carries the session id, is written **after** the first input
-//!   line, not at startup: with stdin held open and silent for four seconds, nothing
-//!   appeared until the first `user` line, and `init` followed it within 25 ms. So
-//!   [`Event::SessionOpened`] on a fresh start arrives after the first [`Session::send`].
-//! - After a `result` line the process stays up until stdin closes; one process carries
-//!   many turns.
+//! Two runs of this module's own: one against a throwaway `CLAUDE_CONFIG_DIR`, one
+//! against a real subscription sign-in with `--tools Bash` and a command the CLI refuses
+//! non-interactively. Both on 2.1.266, model `claude-haiku-4-5-20251001`.
+//!
+//! - `system/init`, which carries the session id, is written **after** an input line, not
+//!   at startup, signed in or not: with stdin held open and silent for three seconds
+//!   nothing but hook and `commands_changed` records appeared, and `init` followed the
+//!   first `user` line within 25 ms. So [`Event::SessionOpened`] on a fresh start arrives
+//!   after the first [`Session::send`]. `init` then repeats for **every** turn, with the
+//!   same session id; only the first is reported upward.
+//! - After a `result` line the process stays up until stdin closes; one process carried
+//!   two turns and exited 0 at EOF.
 //! - A config directory other than `~/.claude` does not see the Keychain credential the
 //!   user's own sign-in left: the CLI answers the first turn with an assistant message
 //!   whose `model` is `<synthetic>` and whose text says not logged in, then a `result`
 //!   with `is_error: true` and `terminal_reason: api_error`, and exits 1 when stdin
-//!   closes. `init` looks the same signed in or not, so
+//!   closes. The same shape carries an expired OAuth session. `init` looks the same
+//!   either way — `apiKeySource: "none"` on a working subscription too — so
 //!   [`BackendError::NotSignedIn`] cannot be decided at `start`; the state surfaces as a
 //!   [`Event::Diagnostic`] and a [`TurnEnd::Failed`] on the first turn.
-//! - `MessagePartial` deltas arrive only with `--include-partial-messages`.
+//! - `MessagePartial` deltas arrive only with `--include-partial-messages`, as
+//!   `stream_event` lines whose `event.type` is `content_block_delta`. Four delta types
+//!   appear — `text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta` —
+//!   and only `text_delta` is the model's message; the rest are the reasoning block, its
+//!   signature, and a tool call's arguments arriving a fragment at a time. A tool call is
+//!   reported from the complete `assistant` message, never from its partial arguments.
+//! - A call the CLI's own rules refused is named in the `result` line's
+//!   `permission_denials`, as `{tool_name, tool_use_id, tool_input}`, and its synthetic
+//!   `tool_result` arrives on a `user` line first. That is how this slice tells what ran
+//!   from what did not.
+//! - `system` carries far more than `init`: `hook_started`, `hook_response`,
+//!   `commands_changed`, `status`, `thinking_tokens`, `permission_denied`,
+//!   `post_turn_summary`, `task_summary`, and a top-level `rate_limit_event` line beside
+//!   them. The ones that arrive several times a second say nothing a log needs, and are
+//!   dropped rather than turned into [`Event::Diagnostic`].
 //!
 //! # Runtime
 //!
@@ -71,6 +92,18 @@ const MEASURED_ON: &str = "claude 2.1.266";
 /// asking again. Polled rather than `wait`ed so that `terminate` can take the child lock
 /// to kill a process that closed stdout and stayed up.
 const REAP_POLL: Duration = Duration::from_millis(20);
+
+/// `system` subtypes that arrive continuously and carry nothing a log needs: progress the
+/// UI has from the events themselves, and per-turn bookkeeping. Measured on 2.1.266;
+/// anything not named here still reaches the log, so a new record is seen rather than
+/// swallowed.
+const SYSTEM_NOISE: &[&str] = &[
+    "status",
+    "thinking_tokens",
+    "commands_changed",
+    "post_turn_summary",
+    "task_summary",
+];
 
 // ---------------------------------------------------------------------------------------
 // The config root
@@ -449,8 +482,9 @@ impl Shared {
             Some("user") => self.on_user(&state, &value),
             Some("result") => self.on_result(&mut state, &value),
             // The acknowledgement of a control request `interrupt` sent; the turn's end is
-            // the `result` line that follows, and this carries nothing else.
-            Some("control_response") => {}
+            // the `result` line that follows, and this carries nothing else. The rate
+            // limit line is the CLI's own quota accounting, not this run's.
+            Some("control_response" | "rate_limit_event") => {}
             other => self.events.event(Event::Diagnostic {
                 text: format!(
                     "unhandled line of type {}",
@@ -463,9 +497,11 @@ impl Shared {
     fn on_system(&self, state: &mut State, value: &Value) {
         let subtype = value.get("subtype").and_then(Value::as_str).unwrap_or("");
         if subtype != "init" {
-            self.events.event(Event::Diagnostic {
-                text: format!("system {}", escape_inline(subtype.as_bytes())),
-            });
+            if !SYSTEM_NOISE.contains(&subtype) {
+                self.events.event(Event::Diagnostic {
+                    text: format!("system {}", escape_inline(subtype.as_bytes())),
+                });
+            }
             return;
         }
         let field = |k: &str| {

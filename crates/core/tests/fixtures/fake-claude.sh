@@ -6,7 +6,8 @@
 #
 # Behaviour, per environment variable (unset = the measured default):
 #   FAKE_CLAUDE_INIT_FIRST=1   emit `system/init` at startup, before any input (the
-#                              contract allows either; the real CLI waits for input)
+#                              contract allows either; the real CLI waits for input and
+#                              then repeats init for every turn, which this does too)
 #   FAKE_CLAUDE_NOT_LOGGED_IN=1 answer the first input as an unauthenticated CLI does
 #   FAKE_CLAUDE_CRASH_AFTER=N  die by SIGKILL after the N-th result line
 #   FAKE_CLAUDE_EXIT_AFTER=N   exit 3 after the N-th result line
@@ -62,6 +63,7 @@ while IFS= read -r line; do
       ;;
     *'"type":"user"'*)
       note "user:$line"
+      init_done=0
       emit_init
       if [ "${FAKE_CLAUDE_NOT_LOGGED_IN:-0}" = "1" ]; then
         printf '%s\n' '{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Not logged in · Please run /login"}]}}'
@@ -80,11 +82,18 @@ while IFS= read -r line; do
           kill -9 $$
           ;;
       esac
-      printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"pon"}}}'
-      printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"g"}}}'
-      printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"text","text":"pong"},{"type":"tool_use","id":"toolu_ran","name":"Read","input":{"file_path":"a.txt"}},{"type":"tool_use","id":"toolu_denied","name":"Bash","input":{"command":"rm -rf /"}}]}}'
+      # The delta types the real CLI interleaves: only the text one is the message.
+      printf '%s\n' '{"type":"system","subtype":"status","status":"requesting"}'
+      printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}'
+      printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}}'
+      printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"AAAA"}}}'
+      printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"pon"}}}'
+      printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"g"}}}'
+      printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"file"}}}'
+      printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}'
+      printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"thinking","thinking":"hmm","signature":"AAAA"},{"type":"text","text":"pong"},{"type":"tool_use","id":"toolu_ran","name":"Read","input":{"file_path":"a.txt"}},{"type":"tool_use","id":"toolu_denied","name":"Bash","input":{"command":"rm -rf /"}}]}}'
       printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_ran","content":"hello\n<b>","is_error":false},{"type":"tool_result","tool_use_id":"toolu_denied","content":[{"type":"text","text":"Permission to use Bash has been denied."}],"is_error":true}]}}'
-      emit_result '{"type":"result","subtype":"success","is_error":false,"session_id":"'"$SESSION"'","total_cost_usd":0.0125,"usage":{"input_tokens":10,"output_tokens":5},"permission_denials":[{"tool_name":"Bash","tool_use_id":"toolu_denied"}]}'
+      emit_result '{"type":"result","subtype":"success","is_error":false,"session_id":"'"$SESSION"'","total_cost_usd":0.0125,"usage":{"input_tokens":10,"output_tokens":5},"permission_denials":[{"tool_name":"Bash","tool_use_id":"toolu_denied","tool_input":{"command":"rm -rf /"}}]}'
       ;;
     *)
       note "other:$line"
