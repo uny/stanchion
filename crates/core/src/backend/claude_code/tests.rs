@@ -97,6 +97,8 @@ impl Dirs {
         let workspace = base.join("ws");
         let root = base.join("cfg");
         std::fs::create_dir_all(&workspace).unwrap();
+        // Resolved, as a `SessionId` reports it (`temp_dir` is a symlink on macOS).
+        let workspace = workspace.canonicalize().unwrap();
         Dirs {
             state: base.join("state.log"),
             base,

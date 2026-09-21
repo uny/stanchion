@@ -283,7 +283,10 @@ impl ClaudeCode {
         let shared = Arc::new(Shared {
             lease: Attachment::open(gate, Backend::ClaudeCode),
             account,
-            workspace_root,
+            // The resolved root, so a stored `SessionId` names the directory that was
+            // checked and run in — not a relative path or a symlink that may point
+            // elsewhere by the time of a resume.
+            workspace_root: cwd,
             events,
             child: Mutex::new(child),
             stdin: Mutex::new(Some(stdin)),
