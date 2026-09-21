@@ -94,7 +94,8 @@ impl Value {
     /// count, and reads as absent.
     pub fn as_u64(&self) -> Option<u64> {
         let n = self.as_f64()?;
-        if n.is_finite() && n >= 0.0 && n.fract() == 0.0 && n <= u64::MAX as f64 {
+        // `u64::MAX as f64` rounds up to 2^64 itself, so the bound is strict.
+        if n.is_finite() && n >= 0.0 && n.fract() == 0.0 && n < 18_446_744_073_709_551_616.0 {
             Some(n as u64)
         } else {
             None
@@ -316,9 +317,13 @@ impl Parser<'_> {
         }
         // The slice is ASCII by construction, and a grammar-valid number always parses.
         let text = std::str::from_utf8(&self.bytes[start..self.at]).expect("ascii");
+        // The grammar above is a subset of what `f64` parses, and an overflowing literal
+        // parses as infinite rather than failing, so the range is checked by hand.
         text.parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite())
             .map(Value::Number)
-            .map_err(|_| self.err("number out of range"))
+            .ok_or_else(|| self.err("number out of range"))
     }
 
     fn digits(&mut self) {
@@ -399,6 +404,10 @@ impl Parser<'_> {
         let Some(hex) = self.bytes.get(self.at..self.at + 4) else {
             return Err(self.err("bad escape"));
         };
+        // Four hex digits exactly: `from_str_radix` alone would also take a leading `+`.
+        if !hex.iter().all(u8::is_ascii_hexdigit) {
+            return Err(self.err("bad escape"));
+        }
         let text = std::str::from_utf8(hex).map_err(|_| self.err("bad escape"))?;
         let n = u32::from_str_radix(text, 16).map_err(|_| self.err("bad escape"))?;
         self.at += 4;
@@ -456,6 +465,14 @@ mod tests {
         assert_eq!(Value::parse("-1").unwrap().as_u64(), None);
         assert_eq!(Value::parse("1.5").unwrap().as_u64(), None);
         assert_eq!(Value::parse("1e3").unwrap().as_u64(), Some(1000));
+        // The largest count an f64 holds below 2^64; 2^64 itself is not a u64.
+        assert_eq!(
+            Value::parse("18446744073709549568").unwrap().as_u64(),
+            Some(18_446_744_073_709_549_568)
+        );
+        assert_eq!(Value::parse("18446744073709551616").unwrap().as_u64(), None);
+        assert!(Value::parse("1e999").is_err());
+        assert!(Value::parse(r#""\u+041""#).is_err());
         assert!(Value::parse("01").is_err());
         assert!(Value::parse("1.").is_err());
         assert!(Value::parse("-").is_err());
