@@ -74,10 +74,10 @@ ships, not a plugin surface. Seven items, each a type:
    distinct kinds: a UI that renders a partial as the message shows text the model may
    still retract. A tool call, its approval and its result share the backend's call id, so
    they correlate when several interleave. `ApprovalRequested` carries what the dialog
-   shows so the WebView can display the same bytes (no backend emits it yet: the gate
-   surfaces the request to its asker only on the answer, which the decision entry lists as
-   open); `RanWithoutAsking` reports a call the
-   backend executed that never reached the gate, recorded under #40 rather than silently
+   shows so the WebView can display the same bytes — the gate's observer
+   (`Consent::ask_observed`) hands the backend the rendering before the request is
+   presented, and the Claude Code backend is the first to emit it; `RanWithoutAsking`
+   reports a call the backend executed that never reached the gate, recorded under #40 rather than silently
    accepted; `Diagnostic` carries what the backend said outside the conversation — an init
    record, stderr — for a log. `SessionOpened` arrives once per attachment, as soon as the
    backend knows its id, which on a CLI may be after the first input.
@@ -145,8 +145,8 @@ the helper relays each request over a Unix socket the core bound for that attach
 in a directory it created with mode 0700, and the core answers it through
 `CliApproval` — a `Bash` call becomes a `CliCommand` request on the gate, any other tool
 is denied before the gate until #50 gives it a door. `ApprovalRequested` is emitted
-from the gate's observer at the moment the dialog opens, `ApprovalResolved` when the
-reply is sent. A call that neither asked at the socket nor appears in
+from the gate's observer once the request is pending and about to be presented — before
+any wait for the presentation slot — `ApprovalResolved` when the reply is sent. A call that neither asked at the socket nor appears in
 `permission_denials` — one the CLI's own rules allowed — is reported as
 `RanWithoutAsking` on a turn that ran to its end. The CLI fails closed on a helper it
 cannot reach or a reply it cannot read (measured; `crates/core/src/backend/claude_code/approval.rs`). `after_interrupt` is

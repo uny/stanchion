@@ -1253,8 +1253,10 @@ fn a_tool_without_a_door_is_denied_before_the_gate() {
     assert!(!all
         .iter()
         .any(|e| matches!(e, Event::ApprovalRequested { .. })));
-    // The asked-at-the-door `Read` was denied, not run: it is not claimed either way
-    // beyond what `permission_denials` says (the fake lists only `toolu_denied`).
+    // The `Write` denied at the door borrowed the fake's `Read` call's id, so that call
+    // counts as asked and is not claimed either way beyond what `permission_denials` says
+    // (the fake lists only `toolu_denied`). This is the assertion that needs `asked`:
+    // everywhere else `permission_denials` already covers the call.
     assert!(!all
         .iter()
         .any(|e| matches!(e, Event::RanWithoutAsking { call, .. } if call.0 == "toolu_ran")));

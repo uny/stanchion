@@ -181,7 +181,10 @@ impl Consent {
     /// only when a token was minted. A request the policy refuses, or that is over the
     /// presenter's capacity or past the queue limit, is refused before the observer is
     /// called, so it is never told of a request that will not be shown. No gate lock is
-    /// held across the call; the observer may not call back into the gate.
+    /// held across the call, so the observer may call back into the gate — [`cancel`]
+    /// included, which withdraws the request before it is presented — but not ask.
+    ///
+    /// [`cancel`]: Consent::cancel
     pub fn ask_observed(
         &self,
         spec: RequestSpec,

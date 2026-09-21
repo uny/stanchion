@@ -54,7 +54,9 @@
 //! still pending at that moment is withdrawn by the lease's end, answered *deny*, and
 //! reported nowhere but the CLI. A request still pending when its *turn* ends — an
 //! interrupt cut the call, or the CLI closed it on its own — is cancelled by `on_result`,
-//! and the deny it produces reaches a CLI that has already moved on.
+//! and the deny it produces reaches a CLI that has already moved on. That cancel happens
+//! under `emit`, and `TurnEnded` is delivered before the lock is released, so the
+//! cancelled request's `ApprovalResolved` follows the `TurnEnded` of the turn it names.
 
 use std::collections::HashSet;
 use std::io::{self, BufReader, Write};
