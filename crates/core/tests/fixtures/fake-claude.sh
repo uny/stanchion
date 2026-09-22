@@ -17,6 +17,9 @@
 #   FAKE_CLAUDE_HOLD=path      on the default turn, after the assistant line, wait until
 #                              `path` exists before the tool results and the result line
 #                              (a turn held open with its calls reported)
+#   Either path may name a directory: the file is then `<path>/<account>`, where
+#   `<account>` is the last component of CLAUDE_CONFIG_DIR, so two accounts run from
+#   one backend (one environment) keep separate logs and are released separately.
 #   FAKE_CLAUDE_ASK=1          on the default turn, ask about `toolu_denied` the way the
 #                              real CLI does: spawn the helper named in --mcp-config, drive
 #                              the MCP handshake and one tools/call, and act on the reply
@@ -25,6 +28,21 @@
 # The session id is the placeholder AGENTS.md prescribes; `.github/scripts/hygiene.sh`
 # rejects a UUID-shaped one.
 set -u
+
+# `$1` as given, or the per-account file inside it when it is a directory.
+per_account() {
+  if [ -d "$1" ]; then
+    printf '%s/%s' "$1" "$(basename "${CLAUDE_CONFIG_DIR:-none}")"
+  else
+    printf '%s' "$1"
+  fi
+}
+if [ -n "${FAKE_CLAUDE_STATE:-}" ]; then
+  FAKE_CLAUDE_STATE=$(per_account "$FAKE_CLAUDE_STATE")
+fi
+if [ -n "${FAKE_CLAUDE_HOLD:-}" ]; then
+  FAKE_CLAUDE_HOLD=$(per_account "$FAKE_CLAUDE_HOLD")
+fi
 
 SESSION="00000000-0000-0000-0000-000000000000"
 turns=0
