@@ -1596,7 +1596,6 @@ fn two_accounts_run_apart_in_one_workspace() {
     assert!(!bob.events.all().iter().any(is_turn_ended));
     release(&release_of(&dirs, BOB));
     bob.events.wait_for("TurnEnded", is_turn_ended);
-    let _ = (alice.turn, bob.turn);
 }
 
 #[test]
@@ -1683,12 +1682,15 @@ fn one_accounts_turn_end_leaves_the_others_request_pending() {
     let bob_responder = holds.open.lock().unwrap().pop().unwrap();
     bob_responder.answer(Answer::Allow);
     assert_eq!(bob_asker.join().unwrap(), r#"{"behavior":"allow"}"#);
-    release(&release_of(&dirs, BOB));
-    let all = bob.events.wait_for("TurnEnded", is_turn_ended);
+    let all = bob.events.wait_for("ApprovalResolved", |e| {
+        matches!(e, Event::ApprovalResolved { .. })
+    });
     assert!(all.iter().any(|e| matches!(
         e,
         Event::ApprovalResolved { turn, allowed: true, .. } if *turn == bob.turn
     )));
+    release(&release_of(&dirs, BOB));
+    bob.events.wait_for("TurnEnded", is_turn_ended);
     drop(holds);
 }
 
