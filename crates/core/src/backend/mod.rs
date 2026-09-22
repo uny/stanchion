@@ -465,8 +465,9 @@ pub enum Event {
         invocation: InvocationId,
         allowed: bool,
     },
-    /// A call the backend executed that never reached the gate: auto-allowed by its own
-    /// rules, or made while the path to the gate was down. Recorded under #40, never
+    /// A call the backend executed that never asked: auto-allowed by its own rules, or
+    /// made while the path to the gate was down. A call that asked and was denied before
+    /// the gate — a tool with no door yet — is not this; its deny is the backend's answer. Recorded under #40, never
     /// silently accepted. A backend with [`ApprovalReach::Every`] never emits this.
     RanWithoutAsking {
         turn: TurnId,
