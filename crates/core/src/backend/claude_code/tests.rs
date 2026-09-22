@@ -384,6 +384,18 @@ fn one_turn_over_the_wire() {
     assert!(!state.contains("--resume"));
 }
 
+/// The helper's own arguments precede the socket path, so the application can name its
+/// executable in helper mode and the socket still lands last.
+#[test]
+fn the_helper_arguments_come_before_the_socket() {
+    let helper = super::Helper::new("/app/stanchion").arg("--prompt-helper");
+    let config = super::approval::mcp_config(&helper, Path::new("/s/1-2.sock"));
+    assert_eq!(
+        config,
+        "{\"mcpServers\":{\"stanchion\":{\"type\":\"stdio\",\"command\":\"/app/stanchion\",\"args\":[\"--prompt-helper\",\"/s/1-2.sock\"]}}}"
+    );
+}
+
 fn kinds_one(e: &Event) -> &'static str {
     kinds(std::slice::from_ref(e))[0]
 }

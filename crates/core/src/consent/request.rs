@@ -18,6 +18,13 @@ use sha2::{Digest as _, Sha256};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InvocationId(pub(crate) u64);
 
+impl InvocationId {
+    /// The number, for a UI that keys its rendering on it.
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 impl fmt::Display for InvocationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "invocation {}", self.0)

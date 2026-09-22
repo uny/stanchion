@@ -72,7 +72,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::json::Value;
-use super::{create_private_dir, read_bounded_line, Shared};
+use super::{create_private_dir, read_bounded_line, Helper, Shared};
 use crate::backend::{AttachmentId, BackendError, Event, ToolCallId};
 use crate::consent::presenter::Rendered;
 use crate::consent::render::escape_inline;
@@ -170,10 +170,16 @@ impl Drop for Listener {
 }
 
 /// The MCP configuration the CLI is given, as one JSON string for `--mcp-config`. Built
-/// from the helper path the backend was constructed with and this attachment's socket —
-/// never from a settings file, which is what keeps it outside the class rule
-/// (`docs/decisions.md`).
-pub(super) fn mcp_config(helper: &Path, socket: &Path) -> String {
+/// from the helper command the backend was constructed with and this attachment's socket,
+/// which goes last on its command line — never from a settings file, which is what keeps
+/// it outside the class rule (`docs/decisions.md`).
+pub(super) fn mcp_config(helper: &Helper, socket: &Path) -> String {
+    let args = helper
+        .args()
+        .iter()
+        .map(|a| Value::String(a.clone()))
+        .chain([Value::String(socket.to_string_lossy().into_owned())])
+        .collect();
     Value::Object(vec![(
         "mcpServers".into(),
         Value::Object(vec![(
@@ -182,12 +188,9 @@ pub(super) fn mcp_config(helper: &Path, socket: &Path) -> String {
                 ("type".into(), Value::String("stdio".into())),
                 (
                     "command".into(),
-                    Value::String(helper.to_string_lossy().into_owned()),
+                    Value::String(helper.program().to_string_lossy().into_owned()),
                 ),
-                (
-                    "args".into(),
-                    Value::Array(vec![Value::String(socket.to_string_lossy().into_owned())]),
-                ),
+                ("args".into(), Value::Array(args)),
             ]),
         )]),
     )])

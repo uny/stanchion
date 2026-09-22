@@ -155,6 +155,22 @@ cannot reach or a reply it cannot read (measured; `crates/core/src/backend/claud
 `crates/core/tests/fixtures/fake-claude.sh`, a shell script that emits the measured
 shapes; the real binary is never run in CI.
 
+The shell supplies the backend's four arguments at startup, from its own environment and
+from no settings file (`src-tauri/src/assembly.rs`): the `claude` binary found on the
+process's `PATH`, then in the usual install directories, then on the login shell's `PATH`
+— a `.app` launched from the Finder has launchd's `PATH`, which holds none of them — and
+kept as a path, so every session runs the binary the user was shown; the config root
+under the application's data directory; the helper as the shell's own executable in
+`--prompt-helper` mode (`src-tauri/src/main.rs` selects it before anything of the
+application is touched, and the body is `stanchion_core::prompt_helper`, which the core's
+own `stanchion-prompt-helper` binary also runs), so that the one file a bundle is sure to
+carry is the helper and no build step copies one beside it; and the socket directory
+under the per-user temporary directory, chosen for its length against the 104-byte socket
+path limit. The WebView drives a conversation through the commands in
+`src-tauri/src/conversations.rs` and receives every event on a Tauri channel it passed
+when it started the conversation, mirrored field for field in `src-tauri/src/events.rs`;
+the channel is one way, and no command takes an approval.
+
 ## The agent loop
 
 One loop, parameterised by a per-model profile.

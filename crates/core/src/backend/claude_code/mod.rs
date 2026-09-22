@@ -235,13 +235,57 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
 // ---------------------------------------------------------------------------------------
 // The backend
 
+/// The command the CLI is told to spawn for its approval requests: the program, and the
+/// arguments that come before the socket path. Resolved by the application at startup,
+/// never read from a settings file. The tests name the core's own binary
+/// (`src/bin/stanchion-prompt-helper.rs`, no arguments); the application names its own
+/// executable with the argument that selects the helper mode
+/// (`crate::prompt_helper`), so the helper is the one file a bundle is sure to carry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Helper {
+    program: PathBuf,
+    args: Vec<String>,
+}
+
+impl Helper {
+    pub fn new(program: impl Into<PathBuf>) -> Self {
+        Helper {
+            program: program.into(),
+            args: Vec::new(),
+        }
+    }
+
+    /// An argument passed before the socket path.
+    pub fn arg(mut self, arg: impl Into<String>) -> Self {
+        self.args.push(arg.into());
+        self
+    }
+
+    pub fn program(&self) -> &Path {
+        &self.program
+    }
+
+    pub fn args(&self) -> &[String] {
+        &self.args
+    }
+}
+
+impl From<&str> for Helper {
+    fn from(program: &str) -> Self {
+        Helper::new(program)
+    }
+}
+
+impl From<PathBuf> for Helper {
+    fn from(program: PathBuf) -> Self {
+        Helper::new(program)
+    }
+}
+
 pub struct ClaudeCode {
     binary: PathBuf,
     root: ConfigRoot,
-    /// The helper the CLI is told to spawn for its approval requests
-    /// (`src/bin/stanchion-prompt-helper.rs`). Resolved by the application at startup —
-    /// the bundle's own copy — never read from a settings file.
-    helper: PathBuf,
+    helper: Helper,
     sockets: SocketDir,
     /// Extra environment for the process. Tests use it to steer the fake binary; the
     /// application passes nothing.
@@ -257,7 +301,7 @@ impl ClaudeCode {
     pub fn new(
         binary: impl Into<PathBuf>,
         root: ConfigRoot,
-        helper: impl Into<PathBuf>,
+        helper: impl Into<Helper>,
         sockets: SocketDir,
     ) -> Self {
         ClaudeCode {
