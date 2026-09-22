@@ -1646,6 +1646,46 @@ fn one_accounts_end_leaves_the_others_request_pending() {
 }
 
 #[test]
+fn one_accounts_turn_end_leaves_the_others_request_pending() {
+    let dirs = Dirs::new("two-turn-end");
+    let backend = two_account_backend(&dirs);
+    let holds = Arc::new(Holds::default());
+    let gate = gate_with(holds.clone());
+    let alice = hold_as(&backend, &dirs, &gate, 1, ALICE);
+    let bob = hold_as(&backend, &dirs, &gate, 2, BOB);
+
+    let alice_asker = ask_in_background(&alice.socket, "toolu_denied");
+    alice.events.wait_for("ApprovalRequested", requested);
+    wait_until(|| holds.open.lock().unwrap().len() == 1);
+    let bob_asker = ask_in_background(&bob.socket, "toolu_denied");
+    bob.events.wait_for("ApprovalRequested", requested);
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(holds.open.lock().unwrap().len(), 1);
+
+    // Alice's CLI moves past the call on its own (the fake's result line) with her
+    // dialog up: her request alone is withdrawn, and Bob's is shown next.
+    release(&release_of(&dirs, ALICE));
+    alice.events.wait_for("TurnEnded", is_turn_ended);
+    assert_eq!(
+        alice_asker.join().unwrap(),
+        r#"{"behavior":"deny","message":"stanchion: refused: request withdrawn"}"#
+    );
+    assert_eq!(holds.dismissed.load(Ordering::SeqCst), 1);
+    wait_until(|| holds.open.lock().unwrap().len() == 2);
+    assert!(!bob_asker.is_finished());
+    let bob_responder = holds.open.lock().unwrap().pop().unwrap();
+    bob_responder.answer(Answer::Allow);
+    assert_eq!(bob_asker.join().unwrap(), r#"{"behavior":"allow"}"#);
+    release(&release_of(&dirs, BOB));
+    let all = bob.events.wait_for("TurnEnded", is_turn_ended);
+    assert!(all.iter().any(|e| matches!(
+        e,
+        Event::ApprovalResolved { turn, allowed: true, .. } if *turn == bob.turn
+    )));
+    drop(holds);
+}
+
+#[test]
 fn two_accounts_dialogs_take_the_slot_in_turn() {
     let dirs = Dirs::new("two-slot");
     let backend = two_account_backend(&dirs);
