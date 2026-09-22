@@ -23,9 +23,13 @@ pub const CLAUDE: &str = "claude";
 pub const KNOWN_DIRS: [&str; 3] = [".local/bin", "/opt/homebrew/bin", "/usr/local/bin"];
 
 /// Finds the `claude` to run. In order: the `PATH` this process has, the known install
-/// directories, and the user's login shell's `PATH` — the last spawns `$SHELL -lc`, which
-/// is the only way to see what a terminal would, and is asked once at startup. The result
-/// is a path, so the CLI the user was shown at startup is the CLI every session runs.
+/// directories, and the user's login shell's `PATH` — the last spawns `$SHELL -lc`, and
+/// is asked once at startup. A login shell reads `.zprofile` and `.zshenv`, not `.zshrc`,
+/// so a `PATH` addition made there is not seen; the known directories are what find the
+/// usual installs. The result is a path, so the CLI the user was shown at startup is the
+/// CLI every session runs. What the CLI inherits is this process's environment, which
+/// from the Finder is launchd's — whether a `claude` that needs more than that runs is
+/// the shell slice's measurement, not this function's.
 pub fn resolve_claude(
     path: Option<&std::ffi::OsStr>,
     home: Option<&Path>,
@@ -107,6 +111,15 @@ pub const SOCKET_PATH_MAX: usize = 104;
 #[cfg(not(target_os = "macos"))]
 pub const SOCKET_PATH_MAX: usize = 108;
 
+/// The longest file name the core gives a socket (`<pid>-<attachment>.sock`, both at
+/// their widest), with its separator.
+const LONGEST_SOCKET_NAME: &str = "/4294967295-18446744073709551615.sock";
+
+/// The longest socket path `dir` can hold.
+fn longest_socket_path(dir: &SocketDir) -> usize {
+    dir.path().as_os_str().len() + LONGEST_SOCKET_NAME.len()
+}
+
 /// The config root: under the application's own data directory, which the shell resolves
 /// through Tauri (the core takes the path and creates it 0700).
 pub fn config_root(app_data_dir: &Path) -> std::io::Result<ConfigRoot> {
@@ -130,8 +143,7 @@ pub fn backend(app_data_dir: &Path) -> Result<ClaudeCode, String> {
     let root = config_root(app_data_dir).map_err(|e| format!("config root: {e}"))?;
     let helper = helper().map_err(|e| format!("helper: {e}"))?;
     let sockets = socket_dir().map_err(|e| format!("socket directory: {e}"))?;
-    let longest = sockets.path().as_os_str().len() + "/4294967295-18446744073709551615.sock".len();
-    if longest > SOCKET_PATH_MAX {
+    if longest_socket_path(&sockets) > SOCKET_PATH_MAX {
         return Err(format!(
             "socket directory {} leaves a socket path over {SOCKET_PATH_MAX} bytes",
             sockets.path().display()
@@ -144,12 +156,28 @@ pub fn backend(app_data_dir: &Path) -> Result<ClaudeCode, String> {
 mod tests {
     use super::*;
 
-    fn dir(name: &str) -> PathBuf {
+    /// A directory removed when dropped.
+    struct Dir(PathBuf);
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    impl std::ops::Deref for Dir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    fn dir(name: &str) -> Dir {
         let d =
             std::env::temp_dir().join(format!("stanchion-assembly-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        d
+        Dir(d)
     }
 
     fn place(dir: &Path, mode: u32) -> PathBuf {
@@ -194,7 +222,8 @@ mod tests {
 
     #[test]
     fn the_login_shell_is_asked_last_and_its_answer_is_a_path() {
-        let shell = dir("shell").join("sh");
+        let home = dir("shell");
+        let shell = home.join("sh");
         std::fs::write(&shell, "#!/bin/sh\necho /somewhere/claude\n").unwrap();
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -222,7 +251,7 @@ mod tests {
     #[test]
     fn the_socket_directory_leaves_room_for_a_socket_path() {
         let dir = socket_dir().unwrap();
-        let longest = dir.path().as_os_str().len() + "/4294967295-18446744073709551615.sock".len();
-        assert!(longest <= SOCKET_PATH_MAX, "{} bytes", longest);
+        let longest = longest_socket_path(&dir);
+        assert!(longest <= SOCKET_PATH_MAX, "{longest} bytes");
     }
 }
