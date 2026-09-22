@@ -8,7 +8,8 @@ import { describe } from "./events";
  * under an account name in a workspace, send input, watch every event the backend
  * reports, interrupt, terminate, resume. Two conversations side by side is the point
  * (#46). Nothing here answers an approval; the dialog is the shell's, and until it is
- * wired every request is refused and shown here as refused.
+ * wired the gate refuses every delegated call for want of a presenter that can show it —
+ * which arrives here as a diagnostic and an error tool result, not as an approval event.
  */
 
 interface Conversation {
