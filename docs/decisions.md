@@ -766,6 +766,19 @@ registered on a second gate. The session surface does not hand any of that out, 
 gate does; narrowing it to the crate means moving those tests in-crate, and is a follow-up
 rather than this entry (#54).
 
+*What "two accounts at once" is at the core's level* (the slice after the approval one):
+two `AccountId`s on one backend and one gate, each a config directory of its own under
+the core's root, a process, a socket and an attachment of its own; what they share is the
+gate, whose one presentation slot shows their dialogs one after the other, and the end
+of either one's turn or attachment withdraws that one's request and no other. Who is
+signed in to each directory is not the core's to see (#41), so whether two directories
+are two principals to the provider — separate rate-limit accounting, a sign-out that
+touches one — is measured with a second subscription where the GUI is, not here; and
+the four things an account is (#45) are named there too, this level needing only that
+two ids are two directories. A dialog queued behind another's slot holds its CLI's
+request open for as long as the first one takes; on 2.1.266 a request answered after
+30 minutes (5, 15 and 30 measured, three CLIs in parallel) was still acted on, so the queue is bounded by the user, not by the CLI.
+
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that
 names either; a
