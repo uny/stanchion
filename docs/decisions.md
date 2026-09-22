@@ -777,7 +777,8 @@ touches one — is measured with a second subscription where the GUI is, not her
 the four things an account is (#45) are named there too, this level needing only that
 two ids are two directories. A dialog queued behind another's slot holds its CLI's
 request open for as long as the first one takes; on 2.1.266 a request answered after
-30 minutes (5, 15 and 30 measured, three CLIs in parallel) was still acted on, so the queue is bounded by the user, not by the CLI.
+30 minutes (5, 15 and 30 measured, three CLIs in parallel) was still acted on, so the queue is bounded by the user, not by the CLI, at least that
+far; past it is not measured.
 
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that
