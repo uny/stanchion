@@ -1571,6 +1571,13 @@ fn two_accounts_run_apart_in_one_workspace() {
     assert!(state_of(&dirs, ALICE).contains(&format!("config_dir={}\n", alice_dir.display())));
     assert!(state_of(&dirs, BOB).contains(&format!("config_dir={}\n", bob_dir.display())));
     assert!(alice_dir.is_dir() && bob_dir.is_dir());
+    // Each process was told its own session's socket: the config directory, the socket
+    // and the attachment belong to the same start, not merely to some start.
+    for (account, socket) in [(ALICE, &alice.socket), (BOB, &bob.socket)] {
+        let state = state_of(&dirs, account);
+        let name = socket.file_name().unwrap().to_str().unwrap();
+        assert!(state.contains(&format!("/{name}\"]")), "{state}");
+    }
     for (held, account) in [(&alice, ALICE), (&bob, BOB)] {
         let opened = held.events.all().into_iter().find_map(|e| match e {
             Event::SessionOpened { session } => Some(session),
