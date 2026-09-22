@@ -136,6 +136,13 @@ pub struct TurnId(u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AttachmentId(u64);
 
+impl AttachmentId {
+    /// The number, for a backend that names a per-attachment resource after it.
+    pub(crate) fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 // The lease lives in its own module so that `RunEnded` has exactly one constructor:
 // `Attachment::end`. A backend in a sibling module cannot build one.
 mod lease {
@@ -180,15 +187,12 @@ mod lease {
             self.id
         }
 
-        /// The consent run to bind requests to. Crate-private on purpose. The first
-        /// caller outside tests is the Claude Code approval slice (#46); until then the
-        /// allow goes with it.
-        #[cfg_attr(not(test), allow(dead_code))]
+        /// The consent run to bind requests to. Crate-private on purpose: a backend asks
+        /// under it; nothing above a backend learns it.
         pub(crate) fn run(&self) -> RunId {
             self.run
         }
 
-        #[cfg_attr(not(test), allow(dead_code))]
         pub(crate) fn gate(&self) -> &Consent {
             &self.gate
         }
@@ -451,15 +455,19 @@ pub enum Event {
         rendered: Rendered,
     },
     /// The gate answered. Whether it minted a token is not reported here — the record has
-    /// that — only that the request is no longer pending and which way it went.
+    /// that — only that the request is no longer pending and which way it went. `allowed`
+    /// is true when the gate allowed *and* the answer reached the backend's process; an
+    /// allow that could not be delivered resolves as not allowed, with a `Diagnostic`
+    /// saying why, since the call did not run.
     ApprovalResolved {
         turn: TurnId,
         call: ToolCallId,
         invocation: InvocationId,
         allowed: bool,
     },
-    /// A call the backend executed that never reached the gate: auto-allowed by its own
-    /// rules, or made while the path to the gate was down. Recorded under #40, never
+    /// A call the backend executed that never asked: auto-allowed by its own rules, or
+    /// made while the path to the gate was down. A call that asked and was denied before
+    /// the gate — a tool with no door yet — is not this; its deny is the backend's answer. Recorded under #40, never
     /// silently accepted. A backend with [`ApprovalReach::Every`] never emits this.
     RanWithoutAsking {
         turn: TurnId,

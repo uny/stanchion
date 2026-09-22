@@ -736,12 +736,22 @@ the fact that it carries no policy; a forged request through it opens a dialog t
 declines, and a forged *reply* is impossible because the reply is the core's to send, on
 the socket, to a request the core numbered.
 
-**Still open, and where it closes.** The gate today returns a token or a refusal and issues
-the invocation id inside; a backend that asks it learns the id only if it is allowed. For
-`ApprovalRequested` to name the pending request before the answer, the gate has to surface
-the rendered request to the asker at the moment it presents — an observer the asker passes,
-not a second channel — and that lands with the first backend that emits the event (the
-Claude Code approval slice), not here. The runtime a backend drives its process from is
+**Still open, and where it closes.** The gate at the time of this entry returned a token or
+a refusal and issued the invocation id inside; a backend that asked it learned the id only
+if it was allowed. For `ApprovalRequested` to name the pending request before the answer,
+the gate had to surface the rendered request to the asker at the moment it presents — an
+observer the asker passes, not a second channel. *Closed by the Claude Code approval
+slice:* `Consent::ask_observed` calls the asker's observer once, with the same `Rendered`
+the dialog gets, after the request is pending and before it is presented, on the asking
+thread and under no gate lock; `CliApproval::resolve_observed` threads it through the CLI
+door. The same slice settled two smaller points the entry left open. The MCP configuration
+is not written into the config directory but passed as a JSON string on the CLI's command
+line (`--mcp-config` accepts one; measured on 2.1.266), with `--strict-mcp-config` so it is
+the only server the CLI loads: nothing is on disk for another process to edit, and the
+property the entry cared about — the helper's path comes from the core's own resolution,
+never from a settings file — holds the same way. And the CLI is started with
+`--permission-mode manual` rather than under whatever mode the user's settings name, since
+which calls are asked is not a setting this backend inherits. The runtime a backend drives its process from is
 likewise not decided here: the contract delivers events through a sink the caller supplies,
 as the presenter does, and a threaded and an executor-driven implementation both fit; the
 Claude Code slice decides for itself and says why (it chose threads; the reasons are in

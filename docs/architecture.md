@@ -74,10 +74,10 @@ ships, not a plugin surface. Seven items, each a type:
    distinct kinds: a UI that renders a partial as the message shows text the model may
    still retract. A tool call, its approval and its result share the backend's call id, so
    they correlate when several interleave. `ApprovalRequested` carries what the dialog
-   shows so the WebView can display the same bytes (no backend emits it yet: the gate
-   surfaces the request to its asker only on the answer, which the decision entry lists as
-   open); `RanWithoutAsking` reports a call the
-   backend executed that never reached the gate, recorded under #40 rather than silently
+   shows so the WebView can display the same bytes — the gate's observer
+   (`Consent::ask_observed`) hands the backend the rendering before the request is
+   presented, and the Claude Code backend is the first to emit it; `RanWithoutAsking`
+   reports a call the backend executed that never reached the gate, recorded under #40 rather than silently
    accepted; `Diagnostic` carries what the backend said outside the conversation — an init
    record, stderr — for a log. `SessionOpened` arrives once per attachment, as soon as the
    backend knows its id, which on a CLI may be after the first input.
@@ -137,9 +137,19 @@ measured beyond #42, signed in and not: `system/init` arrives after an input, no
 startup, and repeats every turn; a process outlives its `result` lines until stdin
 closes; a config directory other than the user's own does not see the Keychain sign-in,
 which surfaces on the first turn, not at `start`; and the `result` line's
-`permission_denials` names the calls the CLI refused by its own rules. Approval is not in this slice: no `--permission-prompt-tool` is passed, the CLI
-denies non-interactively, and every call its own rules allowed on a turn that ran to its
-end is reported as `RanWithoutAsking` from the `result` line's `permission_denials`. `after_interrupt` is
+`permission_denials` names the calls the CLI refused by its own rules. Approval: the CLI
+is started with `--permission-mode manual` and `--permission-prompt-tool` naming a tool
+on `stanchion-prompt-helper` (`crates/core/src/bin`), a stdio MCP server the core ships
+and names in an MCP configuration passed on the command line with `--strict-mcp-config`;
+the helper relays each request over a Unix socket the core bound for that attachment,
+in a directory it created with mode 0700, and the core answers it through
+`CliApproval` — a `Bash` call becomes a `CliCommand` request on the gate, any other tool
+is denied before the gate until #50 gives it a door. `ApprovalRequested` is emitted
+from the gate's observer once the request is pending and about to be presented — before
+any wait for the presentation slot — `ApprovalResolved` when the reply is sent. A call that neither asked at the socket nor appears in
+`permission_denials` — one the CLI's own rules allowed — is reported as
+`RanWithoutAsking` on a turn that ran to its end. The CLI fails closed on a helper it
+cannot reach or a reply it cannot read (measured; `crates/core/src/backend/claude_code/approval.rs`). `after_interrupt` is
 `Unmeasured` — `interrupt` sends the stream-json control request rather than the SIGINT
 #42 measured — until the resume slice measures it. CI drives the backend through
 `crates/core/tests/fixtures/fake-claude.sh`, a shell script that emits the measured
