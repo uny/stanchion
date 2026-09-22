@@ -1053,10 +1053,21 @@ fn start_with(
     events: &Arc<Recorder>,
     gate: Arc<Consent>,
 ) -> Box<dyn Session> {
+    start_as(backend, dirs, events, gate, ConversationId(1), account())
+}
+
+fn start_as(
+    backend: &ClaudeCode,
+    dirs: &Dirs,
+    events: &Arc<Recorder>,
+    gate: Arc<Consent>,
+    conversation: ConversationId,
+    account: AccountId,
+) -> Box<dyn Session> {
     backend
         .start(Start {
-            conversation: ConversationId(1),
-            account: account(),
+            conversation,
+            account,
             workspace_root: dirs.workspace.clone(),
             gate,
             events: events.clone(),
@@ -1461,4 +1472,292 @@ fn a_socket_path_that_does_not_fit_cannot_start() {
         matches!(err, BackendError::CannotStart(ref why) if why.contains("bind")),
         "{err}"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// Two accounts on one backend and one gate, in one workspace (#46: "two accounts each
+// hold a conversation at once"). Each start is its own process, config directory,
+// socket and attachment; what is shared is the gate, whose one presentation slot shows
+// the two accounts' dialogs one after the other. The fake keys its hold file and its
+// state log by config directory when told a directory (`FAKE_CLAUDE_HOLD`,
+// `FAKE_CLAUDE_STATE`), so one turn is released without the other.
+
+/// One account's session with its own recorder, held turn and socket.
+struct Held {
+    session: Box<dyn Session>,
+    events: Arc<Recorder>,
+    turn: TurnId,
+    socket: PathBuf,
+}
+
+/// A backend whose fake holds every default turn and logs per account.
+fn two_account_backend(dirs: &Dirs) -> ClaudeCode {
+    let hold = dirs.base.join("hold");
+    let state = dirs.base.join("state");
+    std::fs::create_dir_all(&hold).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    ClaudeCode::new(
+        FAKE,
+        ConfigRoot::new(&dirs.root).unwrap(),
+        HELPER,
+        dirs.socket_dir(),
+    )
+    .env("FAKE_CLAUDE_STATE", state.to_str().unwrap())
+    .env("FAKE_CLAUDE_HOLD", hold.to_str().unwrap())
+}
+
+/// Starts `account` in conversation `n` and sends the held turn.
+fn hold_as(backend: &ClaudeCode, dirs: &Dirs, gate: &Arc<Consent>, n: u64, account: &str) -> Held {
+    let events = Arc::new(Recorder::default());
+    let session = start_as(
+        backend,
+        dirs,
+        &events,
+        gate.clone(),
+        ConversationId(n),
+        AccountId(account.into()),
+    );
+    let (turn, _) = held_turn(dirs, session.as_ref(), &events);
+    let socket = socket_of(dirs, session.as_ref());
+    Held {
+        session,
+        events,
+        turn,
+        socket,
+    }
+}
+
+/// The file that releases `account`'s held turn (the fake's per-account key is the
+/// config directory's name).
+fn release_of(dirs: &Dirs, account: &str) -> PathBuf {
+    dirs.base.join("hold").join(dir_name(account))
+}
+
+fn state_of(dirs: &Dirs, account: &str) -> String {
+    std::fs::read_to_string(dirs.base.join("state").join(dir_name(account))).unwrap_or_default()
+}
+
+/// Asks on `socket` from another thread, as the helper would.
+fn ask_in_background(socket: &Path, id: &str) -> JoinHandle<String> {
+    let socket = socket.to_path_buf();
+    let request = bash_request(id, "rm -rf /");
+    thread::spawn(move || ask(&socket, &request))
+}
+
+fn requested(e: &Event) -> bool {
+    matches!(e, Event::ApprovalRequested { .. })
+}
+
+const ALICE: &str = "alice@example.com";
+const BOB: &str = "bob@example.com";
+
+#[test]
+fn two_accounts_run_apart_in_one_workspace() {
+    let dirs = Dirs::new("two-apart");
+    let backend = two_account_backend(&dirs);
+    let gate = gate_with(Arc::new(Allows));
+    let alice = hold_as(&backend, &dirs, &gate, 1, ALICE);
+    let bob = hold_as(&backend, &dirs, &gate, 2, BOB);
+
+    // Two processes, two config directories under the one root, two sockets, two
+    // attachments, one workspace.
+    assert_ne!(alice.socket, bob.socket);
+    assert!(alice.socket.exists() && bob.socket.exists());
+    assert_ne!(alice.session.attachment(), bob.session.attachment());
+    // The root is canonical (`ConfigRoot::new`), as the fake sees it.
+    let root = dirs.root.canonicalize().unwrap();
+    let alice_dir = root.join(dir_name(ALICE));
+    let bob_dir = root.join(dir_name(BOB));
+    assert!(state_of(&dirs, ALICE).contains(&format!("config_dir={}\n", alice_dir.display())));
+    assert!(state_of(&dirs, BOB).contains(&format!("config_dir={}\n", bob_dir.display())));
+    assert!(alice_dir.is_dir() && bob_dir.is_dir());
+    // Each process was told its own session's socket: the config directory, the socket
+    // and the attachment belong to the same start, not merely to some start.
+    for (account, socket) in [(ALICE, &alice.socket), (BOB, &bob.socket)] {
+        let state = state_of(&dirs, account);
+        let name = socket.file_name().unwrap().to_str().unwrap();
+        assert!(state.contains(&format!("/{name}\"]")), "{state}");
+    }
+    for (held, account) in [(&alice, ALICE), (&bob, BOB)] {
+        let opened = held.events.all().into_iter().find_map(|e| match e {
+            Event::SessionOpened { session } => Some(session),
+            _ => None,
+        });
+        let opened = opened.expect("SessionOpened");
+        assert_eq!(opened.workspace_root(), dirs.workspace);
+        assert_eq!(opened.account(), &AccountId(account.into()));
+    }
+
+    // Alice's turn is released without Bob's: Bob's stays held, with its calls reported
+    // and no result.
+    release(&release_of(&dirs, ALICE));
+    alice.events.wait_for("TurnEnded", is_turn_ended);
+    thread::sleep(Duration::from_millis(100));
+    assert!(!bob.events.all().iter().any(is_turn_ended));
+    release(&release_of(&dirs, BOB));
+    bob.events.wait_for("TurnEnded", is_turn_ended);
+}
+
+#[test]
+fn one_accounts_end_leaves_the_others_request_pending() {
+    let dirs = Dirs::new("two-end");
+    let backend = two_account_backend(&dirs);
+    let holds = Arc::new(Holds::default());
+    let gate = gate_with(holds.clone());
+    let alice = hold_as(&backend, &dirs, &gate, 1, ALICE);
+    let bob = hold_as(&backend, &dirs, &gate, 2, BOB);
+
+    // Alice's request has the slot; Bob's is queued behind it, requested but not shown.
+    let alice_asker = ask_in_background(&alice.socket, "toolu_denied");
+    alice.events.wait_for("ApprovalRequested", requested);
+    wait_until(|| holds.open.lock().unwrap().len() == 1);
+    let bob_asker = ask_in_background(&bob.socket, "toolu_denied");
+    bob.events.wait_for("ApprovalRequested", requested);
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(holds.open.lock().unwrap().len(), 1);
+
+    // Alice's run ends with her dialog up: her request is withdrawn and her dialog
+    // dismissed; Bob's request is neither — it takes the slot and is shown.
+    alice.session.terminate().unwrap();
+    alice.events.wait_for("Exited", is_exited);
+    assert_eq!(
+        alice_asker.join().unwrap(),
+        r#"{"behavior":"deny","message":"stanchion: refused: request withdrawn"}"#
+    );
+    assert_eq!(holds.dismissed.load(Ordering::SeqCst), 1);
+    assert!(!alice.socket.exists());
+    assert!(bob.socket.exists());
+    wait_until(|| holds.open.lock().unwrap().len() == 2);
+    assert!(!bob_asker.is_finished());
+    assert!(!bob
+        .events
+        .all()
+        .iter()
+        .any(|e| matches!(e, Event::ApprovalResolved { .. })));
+
+    // Bob's dialog is answered: the allow is his execution, in his turn.
+    let bob_responder = holds.open.lock().unwrap().pop().unwrap();
+    bob_responder.answer(Answer::Allow);
+    assert_eq!(bob_asker.join().unwrap(), r#"{"behavior":"allow"}"#);
+    let all = bob.events.wait_for("ApprovalResolved", |e| {
+        matches!(e, Event::ApprovalResolved { .. })
+    });
+    assert!(all.iter().any(|e| matches!(
+        e,
+        Event::ApprovalResolved { turn, allowed: true, .. } if *turn == bob.turn
+    )));
+    release(&release_of(&dirs, BOB));
+    bob.events.wait_for("TurnEnded", is_turn_ended);
+    drop(holds);
+}
+
+#[test]
+fn one_accounts_turn_end_leaves_the_others_request_pending() {
+    let dirs = Dirs::new("two-turn-end");
+    let backend = two_account_backend(&dirs);
+    let holds = Arc::new(Holds::default());
+    let gate = gate_with(holds.clone());
+    let alice = hold_as(&backend, &dirs, &gate, 1, ALICE);
+    let bob = hold_as(&backend, &dirs, &gate, 2, BOB);
+
+    let alice_asker = ask_in_background(&alice.socket, "toolu_denied");
+    alice.events.wait_for("ApprovalRequested", requested);
+    wait_until(|| holds.open.lock().unwrap().len() == 1);
+    let bob_asker = ask_in_background(&bob.socket, "toolu_denied");
+    bob.events.wait_for("ApprovalRequested", requested);
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(holds.open.lock().unwrap().len(), 1);
+
+    // Alice's CLI moves past the call on its own (the fake's result line) with her
+    // dialog up: her request alone is withdrawn, and Bob's is shown next.
+    release(&release_of(&dirs, ALICE));
+    alice.events.wait_for("TurnEnded", is_turn_ended);
+    assert_eq!(
+        alice_asker.join().unwrap(),
+        r#"{"behavior":"deny","message":"stanchion: refused: request withdrawn"}"#
+    );
+    assert_eq!(holds.dismissed.load(Ordering::SeqCst), 1);
+    wait_until(|| holds.open.lock().unwrap().len() == 2);
+    assert!(!bob_asker.is_finished());
+    let bob_responder = holds.open.lock().unwrap().pop().unwrap();
+    bob_responder.answer(Answer::Allow);
+    assert_eq!(bob_asker.join().unwrap(), r#"{"behavior":"allow"}"#);
+    let all = bob.events.wait_for("ApprovalResolved", |e| {
+        matches!(e, Event::ApprovalResolved { .. })
+    });
+    assert!(all.iter().any(|e| matches!(
+        e,
+        Event::ApprovalResolved { turn, allowed: true, .. } if *turn == bob.turn
+    )));
+    release(&release_of(&dirs, BOB));
+    bob.events.wait_for("TurnEnded", is_turn_ended);
+    drop(holds);
+}
+
+#[test]
+fn two_accounts_dialogs_take_the_slot_in_turn() {
+    let dirs = Dirs::new("two-slot");
+    let backend = two_account_backend(&dirs);
+    let holds = Arc::new(Holds::default());
+    let gate = gate_with(holds.clone());
+    let alice = hold_as(&backend, &dirs, &gate, 1, ALICE);
+    let bob = hold_as(&backend, &dirs, &gate, 2, BOB);
+
+    // Both requested, one shown.
+    let alice_asker = ask_in_background(&alice.socket, "toolu_denied");
+    alice.events.wait_for("ApprovalRequested", requested);
+    wait_until(|| holds.open.lock().unwrap().len() == 1);
+    let bob_asker = ask_in_background(&bob.socket, "toolu_denied");
+    bob.events.wait_for("ApprovalRequested", requested);
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(holds.open.lock().unwrap().len(), 1);
+    assert!(!bob_asker.is_finished());
+
+    // Alice's is declined: her CLI gets the deny, Bob's dialog is shown next, and the
+    // answer to it reaches Bob's CLI and Bob's turn only.
+    let first = holds.open.lock().unwrap().pop().unwrap();
+    first.answer(Answer::Decline);
+    assert_eq!(
+        alice_asker.join().unwrap(),
+        r#"{"behavior":"deny","message":"stanchion: declined"}"#
+    );
+    wait_until(|| holds.open.lock().unwrap().len() == 1);
+    let second = holds.open.lock().unwrap().pop().unwrap();
+    second.answer(Answer::Allow);
+    assert_eq!(bob_asker.join().unwrap(), r#"{"behavior":"allow"}"#);
+    let alice_all = alice.events.wait_for("ApprovalResolved", |e| {
+        matches!(e, Event::ApprovalResolved { .. })
+    });
+    let bob_all = bob.events.wait_for("ApprovalResolved", |e| {
+        matches!(e, Event::ApprovalResolved { .. })
+    });
+    assert!(alice_all.iter().any(|e| matches!(
+        e,
+        Event::ApprovalResolved { turn, allowed: false, .. } if *turn == alice.turn
+    )));
+    assert!(bob_all.iter().any(|e| matches!(
+        e,
+        Event::ApprovalResolved { turn, allowed: true, .. } if *turn == bob.turn
+    )));
+    assert!(!alice_all
+        .iter()
+        .any(|e| matches!(e, Event::ApprovalResolved { allowed: true, .. })));
+    assert!(!bob_all
+        .iter()
+        .any(|e| matches!(e, Event::ApprovalResolved { allowed: false, .. })));
+
+    release(&release_of(&dirs, ALICE));
+    release(&release_of(&dirs, BOB));
+    alice.events.wait_for("TurnEnded", is_turn_ended);
+    bob.events.wait_for("TurnEnded", is_turn_ended);
+    drop(holds);
+}
+
+/// Polls `pred` for up to five seconds.
+fn wait_until(pred: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !pred() {
+        assert!(Instant::now() < deadline, "timed out");
+        thread::sleep(Duration::from_millis(10));
+    }
 }

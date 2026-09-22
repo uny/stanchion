@@ -31,9 +31,13 @@
 //! - `--mcp-config` accepts the configuration as a JSON string on the command line, and
 //!   `--strict-mcp-config` makes it the only MCP server the CLI loads.
 //! - A reply that took 90 seconds — a user looking at the dialog — was still acted on:
-//!   the call ran. Whether the CLI gives up on a tool call after some longer wait is not
-//!   measured; if it does, the call is denied (fail-closed, as above) and the dialog's
-//!   answer, when it comes, reaches a call the CLI has closed.
+//!   the call ran; so did replies delayed 5, 15 and 30 minutes (three CLIs in parallel,
+//!   each with its own helper and socket). A dialog queued behind another attachment's
+//!   turn at the gate's one presentation slot therefore holds its CLI's request open for
+//!   as long as the first takes, bounded by the user, not by the CLI, at least to 30
+//!   minutes. Past that is not measured; if the CLI did give up, the call would be denied
+//!   (fail-closed, as above) and the dialog's answer, when it came, would reach a call
+//!   the CLI has closed.
 //!
 //! # What the request cannot say
 //!
