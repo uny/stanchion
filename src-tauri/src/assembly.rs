@@ -5,8 +5,10 @@
 //! (`docs/decisions.md`, "The run backend contract"). What a settings file could add is
 //! left open there.
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use stanchion_core::backend::claude_code::{ClaudeCode, ConfigRoot, Helper, SocketDir};
 
@@ -26,10 +28,12 @@ pub const KNOWN_DIRS: [&str; 3] = [".local/bin", "/opt/homebrew/bin", "/usr/loca
 /// directories, and the user's login shell's `PATH` — the last spawns `$SHELL -lc`, and
 /// is asked once at startup. A login shell reads `.zprofile` and `.zshenv`, not `.zshrc`,
 /// so a `PATH` addition made there is not seen; the known directories are what find the
-/// usual installs. The result is a path, so the CLI the user was shown at startup is the
-/// CLI every session runs. What the CLI inherits is this process's environment, which
-/// from the Finder is launchd's — whether a `claude` that needs more than that runs is
-/// the shell slice's measurement, not this function's.
+/// usual installs. The result is a path to a file this process may execute — the
+/// shell's answer is held to that too, since a profile that prints a banner or an alias
+/// puts something other than a path on its stdout — so the CLI the user was shown at
+/// startup is the CLI every session runs. What the CLI inherits is this process's
+/// environment, which from the Finder is launchd's — whether a `claude` that needs more
+/// than that runs is the shell slice's measurement, not this function's.
 pub fn resolve_claude(
     path: Option<&std::ffi::OsStr>,
     home: Option<&Path>,
@@ -41,18 +45,65 @@ pub fn resolve_claude(
     if let Some(found) = known_dirs(home).into_iter().find_map(|d| executable(&d)) {
         return Some(found);
     }
-    let shell = shell?;
-    let output = Command::new(shell)
+    let output = ask_login_shell(shell?)?;
+    // The last line: a profile may print before `command -v` does. And only a path that
+    // is a file this process can execute; anything else is not the binary.
+    output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .filter(|l| Path::new(l).is_absolute())
+        .and_then(|l| executable(Path::new(l)))
+}
+
+/// How long the login shell has to answer. A profile that waits on something never
+/// gets to hold the window closed; the answer is then "not found".
+const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Runs `command -v claude` in a login shell and returns its stdout, or `None` when the
+/// shell fails, cannot be spawned, or does not answer in time — in which case it is
+/// killed, so a child of the profile that kept the pipe open does not keep us here.
+fn ask_login_shell(shell: &Path) -> Option<String> {
+    let mut child = Command::new(shell)
         .args(["-lc", &format!("command -v {CLAUDE}")])
-        .stdin(std::process::Stdio::null())
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    if !output.status.success() {
+    let mut stdout = child.stdout.take()?;
+    // Read on a thread of its own: the pipe is what a profile's background child would
+    // hold open, and the wait below is on the shell, not the pipe.
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.read_to_string(&mut out);
+        out
+    });
+    let deadline = Instant::now() + LOGIN_SHELL_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
         return None;
     }
-    let line = String::from_utf8_lossy(&output.stdout);
-    let line = line.trim();
-    (!line.is_empty()).then(|| PathBuf::from(line))
+    // The shell has exited; if something it left behind still holds the pipe, the
+    // reader is left to it and the answer is "not found" rather than a wait.
+    while !reader.is_finished() {
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    reader.join().ok()
 }
 
 /// Every candidate the known directories name, in order.
@@ -220,15 +271,44 @@ mod tests {
         assert_eq!(found, None);
     }
 
-    #[test]
-    fn the_login_shell_is_asked_last_and_its_answer_is_a_path() {
-        let home = dir("shell");
-        let shell = home.join("sh");
-        std::fs::write(&shell, "#!/bin/sh\necho /somewhere/claude\n").unwrap();
+    fn fake_shell(dir: &Path, script: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
+        let shell = dir.join("sh");
+        std::fs::write(&shell, format!("#!/bin/sh\n{script}\n")).unwrap();
         std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        shell
+    }
+
+    #[test]
+    fn the_login_shell_is_asked_last_and_its_last_line_is_the_path() {
+        let d = dir("shell");
+        let wanted = place(&d, 0o755);
+        // A profile that prints a banner before the answer.
+        let shell = fake_shell(
+            &d,
+            &format!("echo 'welcome back'\necho {}", wanted.display()),
+        );
         let found = resolve_claude(None, None, Some(&shell));
-        assert_eq!(found, Some(PathBuf::from("/somewhere/claude")));
+        assert_eq!(found, Some(wanted));
+    }
+
+    #[test]
+    fn the_login_shell_answer_must_be_an_executable_file() {
+        let d = dir("shell-alias");
+        // What `command -v` prints for an alias, and a path that does not exist.
+        for answer in ["alias claude='claude --foo'", "/nonexistent/claude"] {
+            let shell = fake_shell(&d, &format!("echo \"{answer}\""));
+            assert_eq!(resolve_claude(None, None, Some(&shell)), None, "{answer}");
+        }
+    }
+
+    #[test]
+    fn a_login_shell_that_does_not_answer_in_time_is_not_found() {
+        let d = dir("shell-hang");
+        let shell = fake_shell(&d, "sleep 30");
+        let started = Instant::now();
+        assert_eq!(resolve_claude(None, None, Some(&shell)), None);
+        assert!(started.elapsed() < LOGIN_SHELL_TIMEOUT + Duration::from_secs(2));
     }
 
     #[test]

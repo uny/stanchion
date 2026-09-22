@@ -9,7 +9,8 @@
 //! is exempt from the ACL unconditionally (`docs/decisions.md`). And nothing here can
 //! carry an answer back: the channel is one way, from the core to the WebView.
 
-use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use stanchion_core::backend::{
@@ -17,8 +18,6 @@ use stanchion_core::backend::{
 };
 use stanchion_core::consent::presenter::Rendered;
 use tauri::ipc::Channel;
-
-use crate::conversations::Conversations;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SessionRef {
@@ -319,35 +318,54 @@ pub struct ConversationEvent {
 
 /// The sink a conversation's events go to. A send that fails — the WebView reloaded, the
 /// window closed — is dropped: the session outlives its channel, and the core's contract
-/// lets a sink drop what it cannot deliver. The one event the shell reads on the way
-/// past is `SessionOpened`, whose id it keeps for a resume.
+/// lets a sink drop what it cannot deliver. Two events are read on the way past and kept
+/// here, on the sink itself, so there is no window in which they can be missed: the
+/// `SessionOpened` a resume needs — which on a fresh start may arrive before the shell
+/// has stored the session at all (`init` before the first input is a measured shape) —
+/// and the `Exited` that says this attachment is over.
 pub struct ChannelSink {
     conversation: ConversationId,
     channel: Channel<ConversationEvent>,
-    /// Weak: the state holds the session, the session holds this sink.
-    conversations: Weak<Conversations>,
+    session: Mutex<Option<SessionId>>,
+    exited: AtomicBool,
 }
 
 impl ChannelSink {
-    pub fn new(
-        conversation: ConversationId,
-        channel: Channel<ConversationEvent>,
-        conversations: Arc<Conversations>,
-    ) -> Arc<Self> {
+    pub fn new(conversation: ConversationId, channel: Channel<ConversationEvent>) -> Arc<Self> {
         Arc::new(ChannelSink {
             conversation,
             channel,
-            conversations: Arc::downgrade(&conversations),
+            session: Mutex::new(None),
+            exited: AtomicBool::new(false),
         })
+    }
+
+    pub fn channel(&self) -> &Channel<ConversationEvent> {
+        &self.channel
+    }
+
+    /// The session id this attachment reported, if it has.
+    pub fn session(&self) -> Option<SessionId> {
+        self.session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Whether this attachment reported its end. Nothing follows `Exited` on a sink.
+    pub fn exited(&self) -> bool {
+        self.exited.load(Ordering::SeqCst)
     }
 }
 
 impl EventSink for ChannelSink {
     fn event(&self, event: Event) {
-        if let Event::SessionOpened { session } = &event {
-            if let Some(conversations) = self.conversations.upgrade() {
-                conversations.note_session(self.conversation.0, session.clone());
+        match &event {
+            Event::SessionOpened { session } => {
+                *self.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session.clone());
             }
+            Event::Exited { .. } => self.exited.store(true, Ordering::SeqCst),
+            _ => {}
         }
         let _ = self.channel.send(ConversationEvent {
             conversation: self.conversation.0,

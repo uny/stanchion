@@ -9,10 +9,12 @@
 //! so every request the CLI delegates is refused and the WebView sees the refusal as an
 //! `ApprovalResolved { allowed: false }` it can render.
 //!
-//! Resume: a `SessionId` reaches the WebView in `SessionOpened`, and the WebView hands it
-//! back to `resume_conversation` by the conversation it was opened in; the shell resumes
-//! the session it stored under that conversation, with the account and workspace root it
-//! was created under, never ones the WebView names. Sessions are held for the process's
+//! Resume: a `SessionId` reaches the WebView in `SessionOpened`, and the WebView asks for
+//! a resume by the conversation it was opened in; the shell resumes the session that
+//! conversation's sink recorded, with the account and workspace root it was created
+//! under, never ones the WebView names. Only an attachment that has reported `Exited`
+//! is resumed, and one resume at a time per conversation, so the events of two
+//! attachments never interleave on one channel. Sessions are held for the process's
 //! life only; a store that survives it is later work (#46).
 
 use std::collections::HashMap;
@@ -22,7 +24,7 @@ use std::sync::{Arc, Mutex};
 
 use stanchion_core::backend::claude_code::ClaudeCode;
 use stanchion_core::backend::{
-    AccountId, ConversationId, Resume, RunBackend, Session, SessionId, Start, UserInput,
+    AccountId, ConversationId, Resume, RunBackend, Session, Start, UserInput,
 };
 use stanchion_core::consent::Consent;
 use tauri::ipc::Channel;
@@ -42,9 +44,11 @@ pub struct Conversations {
 
 struct Open {
     session: Arc<dyn Session>,
-    /// The session id the backend reported, kept for a resume under this conversation.
-    id: Option<SessionId>,
-    channel: Channel<ConversationEvent>,
+    /// The sink of the current attachment: it holds the session id and whether the
+    /// attachment has ended.
+    sink: Arc<ChannelSink>,
+    /// Held for the length of a resume, so two cannot race to replace the attachment.
+    resuming: Arc<Mutex<()>>,
 }
 
 impl Conversations {
@@ -73,13 +77,6 @@ impl Conversations {
             .map(|o| o.session.clone())
             .ok_or_else(|| format!("no conversation {conversation}"))
     }
-
-    /// Records the session id a `SessionOpened` carried, so a resume can name it.
-    pub fn note_session(&self, conversation: u64, id: SessionId) {
-        if let Some(open) = self.open().get_mut(&conversation) {
-            open.id = Some(id);
-        }
-    }
 }
 
 /// The reason the backend could not be built, or nothing. Shown by the WebView at
@@ -105,22 +102,22 @@ pub async fn start_conversation(
     tauri::async_runtime::spawn_blocking(move || {
         let backend = state.backend()?;
         let conversation = state.next.fetch_add(1, Ordering::SeqCst);
-        let sink = ChannelSink::new(ConversationId(conversation), channel.clone(), state.clone());
+        let sink = ChannelSink::new(ConversationId(conversation), channel);
         let session = backend
             .start(Start {
                 conversation: ConversationId(conversation),
                 account: AccountId(account),
                 workspace_root: PathBuf::from(workspace_root),
                 gate: state.gate.clone(),
-                events: sink,
+                events: sink.clone(),
             })
             .map_err(|e| e.to_string())?;
         state.open().insert(
             conversation,
             Open {
                 session: Arc::from(session),
-                id: None,
-                channel,
+                sink,
+                resuming: Arc::new(Mutex::new(())),
             },
         );
         Ok(conversation)
@@ -170,9 +167,9 @@ pub async fn terminate_conversation(
         .map_err(|e| format!("command thread: {e}"))?
 }
 
-/// Reattaches to the session this conversation reported, on the same channel. The
-/// account and workspace root are the stored session's; nothing from the WebView names
-/// either.
+/// Reattaches to the session this conversation reported, on the same channel, once the
+/// attachment before it has reported `Exited`. The account and workspace root are the
+/// stored session's; nothing from the WebView names either.
 #[tauri::command]
 pub async fn resume_conversation(
     state: tauri::State<'_, Arc<Conversations>>,
@@ -181,28 +178,42 @@ pub async fn resume_conversation(
     let state = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
         let backend = state.backend()?;
-        let (id, channel) = {
+        let (resuming, previous) = {
             let open = state.open();
             let open = open
                 .get(&conversation)
                 .ok_or_else(|| format!("no conversation {conversation}"))?;
-            let id = open
-                .id
-                .clone()
-                .ok_or_else(|| "this conversation has no session id to resume".to_string())?;
-            (id, open.channel.clone())
+            (open.resuming.clone(), open.sink.clone())
         };
-        let sink = ChannelSink::new(ConversationId(conversation), channel, state.clone());
+        // One resume at a time: the checks below are against the attachment that is
+        // current while this lock is held, and the replacement happens under it.
+        let _resuming = resuming.lock().unwrap_or_else(|e| e.into_inner());
+        let current = state
+            .open()
+            .get(&conversation)
+            .map(|o| o.sink.clone())
+            .ok_or_else(|| format!("no conversation {conversation}"))?;
+        if !Arc::ptr_eq(&current, &previous) {
+            return Err("this conversation was just resumed".into());
+        }
+        if !current.exited() {
+            return Err("this conversation is still attached; terminate it first".into());
+        }
+        let id = current
+            .session()
+            .ok_or_else(|| "this conversation has no session id to resume".to_string())?;
+        let sink = ChannelSink::new(ConversationId(conversation), current.channel().clone());
         let session = backend
             .resume(Resume {
                 conversation: ConversationId(conversation),
                 session: id,
                 gate: state.gate.clone(),
-                events: sink,
+                events: sink.clone(),
             })
             .map_err(|e| e.to_string())?;
         if let Some(open) = state.open().get_mut(&conversation) {
             open.session = Arc::from(session);
+            open.sink = sink;
         }
         Ok(())
     })
