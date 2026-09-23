@@ -75,7 +75,7 @@ export function App() {
   const append = (id: number, event: EventRef) =>
     update(id, (c) => ({
       ...c,
-      lines: [...c.lines, { key: nextKey++, event }],
+      lines: merge(c.lines, event),
       exited: event.kind === "exited" ? true : event.kind === "session_opened" ? false : c.exited,
       hasSession: c.hasSession || event.kind === "session_opened",
     }));
@@ -84,8 +84,10 @@ export function App() {
     setError(null);
     try {
       await invoke(command, args);
+      return true;
     } catch (cause) {
       setError(String(cause));
+      return false;
     }
   };
 
@@ -126,12 +128,29 @@ export function App() {
   );
 }
 
+/**
+ * A turn's partial deltas are one line that grows, and the complete message replaces it;
+ * every other event is a line of its own.
+ */
+function merge(lines: Line[], event: EventRef): Line[] {
+  const last = lines[lines.length - 1];
+  if (last?.event.kind === "message_partial" && last.event.turn === ("turn" in event ? event.turn : null)) {
+    if (event.kind === "message_partial") {
+      return [...lines.slice(0, -1), { key: last.key, event: { ...event, text: last.event.text + event.text } }];
+    }
+    if (event.kind === "message_complete" && event.message.role === "assistant") {
+      return [...lines.slice(0, -1), { key: last.key, event }];
+    }
+  }
+  return [...lines, { key: nextKey++, event }];
+}
+
 function ConversationView({
   conversation: c,
   call,
 }: {
   conversation: Conversation;
-  call: (command: string, args: Record<string, unknown>) => Promise<void>;
+  call: (command: string, args: Record<string, unknown>) => Promise<boolean>;
 }) {
   const [text, setText] = useState("");
   return (
@@ -151,8 +170,10 @@ function ConversationView({
         onSubmit={(e) => {
           e.preventDefault();
           if (!text) return;
-          void call("send_input", { conversation: c.id, text });
-          setText("");
+          // Cleared only once the core took it: a `Busy` refusal keeps the draft.
+          void call("send_input", { conversation: c.id, text }).then((sent) => {
+            if (sent) setText((current) => (current === text ? "" : current));
+          });
         }}
       >
         <input value={text} onChange={(e) => setText(e.target.value)} disabled={c.exited} placeholder="say something" />
