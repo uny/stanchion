@@ -1833,7 +1833,8 @@ fn wait_until(pred: impl Fn() -> bool) {
 // `terminate` ends the tools the CLI started, not only the CLI (`tree`). The fake's
 // "tools" turn starts two, as the real CLI's Bash call is started: one in a session of its
 // own, one left in the CLI's group. Each marks that it started and, three seconds later,
-// that it ran to its end.
+// that it ran to its end. Only macOS walks the tree (`tree::kill`), so the tests that
+// terminate run there only.
 
 /// How long a tool of the "tools" turn takes to reach its end, with room to spare.
 const TOOL_RUNS: Duration = Duration::from_secs(5);
@@ -1883,6 +1884,7 @@ fn left_alone_the_tools_run_to_their_end() {
     session.terminate().unwrap();
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn terminate_kills_the_tools_the_cli_started() {
     let dirs = Dirs::new("tools");
@@ -1904,6 +1906,7 @@ fn terminate_kills_the_tools_the_cli_started() {
     );
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn a_second_terminate_returns_once_the_first_has_killed() {
     let dirs = Dirs::new("tools-twice");
@@ -1927,6 +1930,7 @@ fn a_second_terminate_returns_once_the_first_has_killed() {
     assert!(!marker(&prefix, "group").exists());
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn terminating_one_account_leaves_the_other_accounts_tools() {
     let dirs = Dirs::new("tools-two");
