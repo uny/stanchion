@@ -1837,6 +1837,7 @@ fn wait_until(pred: impl Fn() -> bool) {
 // terminate run there only.
 
 /// How long a tool of the "tools" turn takes to reach its end, with room to spare.
+#[cfg(target_os = "macos")]
 const TOOL_RUNS: Duration = Duration::from_secs(5);
 
 fn tools_backend(dirs: &Dirs, prefix: &Path) -> ClaudeCode {
