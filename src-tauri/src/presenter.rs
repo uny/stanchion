@@ -135,8 +135,9 @@ fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
     state.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Runs `work` on the main thread's run loop in the default or the common modes.
-fn perform_on_main(common: bool, work: impl Fn() + 'static) {
+/// Runs `work` on the main thread's run loop in the default or the common modes. `work` is
+/// built on the calling thread and run on the main one, hence `Send`.
+fn perform_on_main(common: bool, work: impl Fn() + Send + 'static) {
     let Some(main) = CFRunLoop::main() else {
         return;
     };
