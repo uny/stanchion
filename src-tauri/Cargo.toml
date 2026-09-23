@@ -22,3 +22,35 @@ stanchion-core = { path = "../crates/core" }
 # library; the shell may, since it is the IPC boundary and nothing it serialises is a
 # token.
 serde = { version = "1", features = ["derive"] }
+# The consent presenter (`presenter`) drives `NSAlert` itself. Pinned to the versions Tauri
+# already links, so the graph holds one copy of each; macOS is the only target.
+block2 = "0.6.2"
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSAlert",
+    "NSApplication",
+    "NSButton",
+    "NSControl",
+    "NSResponder",
+    "NSScreen",
+    "NSView",
+    "NSWindow",
+] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "CFRunLoop",
+    "CFString",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "NSArray",
+    "NSEnumerator",
+    "NSGeometry",
+    "NSNotification",
+    "NSOperation",
+    "NSObject",
+    "NSString",
+] }

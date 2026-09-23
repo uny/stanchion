@@ -9,15 +9,16 @@
 //! tool as not found and denies the call for a reason that is the harness's, not the
 //! gate's.
 //!
-//! What the gate does with the call is the presenter's: the application ships
-//! [`FailClosed`] until the native alert is wired, and a presenter of capacity zero
-//! refuses every request *before* it is presented — the gate checks capacity ahead of the
-//! observer (`Consent::ask_observed`), so no `ApprovalRequested` and no
-//! `ApprovalResolved` are emitted at all. The refusal surfaces as a `Diagnostic` naming
-//! the call and the reason, and as the CLI's own error `ToolResult`; the call does not
-//! run, and it is not reported as `RanWithoutAsking`. That is what this asserts. The
-//! approval *events* arrive once a presenter with capacity exists, which is the native
-//! alert's slice.
+//! What the gate does with the call is the presenter's. The application ships the native
+//! alert, which needs a running application's main thread and a person to press it; this
+//! harness has neither, so it runs with [`FailClosed`], and pins the refusal path every
+//! request too long for the alert also takes: a presenter of capacity zero refuses every
+//! request *before* it is presented — the gate checks capacity ahead of the observer
+//! (`Consent::ask_observed`), so no `ApprovalRequested` and no `ApprovalResolved` are
+//! emitted at all. The refusal surfaces as a `Diagnostic` naming the call and the reason,
+//! and as the CLI's own error `ToolResult`; the call does not run, and it is not reported
+//! as `RanWithoutAsking`. That is what this asserts. The approved path is measured by hand
+//! in the application itself.
 //!
 //! Ignored, and gated on an environment variable besides: it spawns the real binary,
 //! which needs a signed-in config directory and spends the user's subscription. Run it

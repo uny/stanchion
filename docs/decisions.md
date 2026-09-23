@@ -608,6 +608,40 @@ gateway URL, so that `https://api.example.com@evil.example/` reads as what it is
 truncated from the tail. If the presenter fails — cannot open, returns nothing, returns
 something unexpected — nothing executes, and on a CLI backend the deny reply still goes out.
 
+**The native alert, as built and measured (#46).** `src-tauri/src/presenter.rs`
+(`NativeAlert`). Each point below was measured on macOS under the Tauri event loop with
+`src-tauri/examples/alert_probe.rs`, not inferred.
+- *Where the modal runs.* The alert is run from a `CFRunLoopPerformBlock` block in the
+  default mode. Run from a block on the GCD main queue, a modal holds back every later
+  main-queue block until it ends — a dismissal sent there did not arrive until the alert
+  was closed some other way — because the queue is serial. A block in the common modes
+  *is* run inside the modal, so that is how a dismissal reaches it; it checks, on the main
+  thread, that the alert on screen is still the one withdrawn before calling `abortModal`
+  (which returns `NSModalResponseAbort`, mapped to no answer). A second alert queued behind
+  a live one waits in the default mode, which the modal run loop does not run, so alerts
+  never nest. Tauri's own main-thread work kept being delivered while an alert was up.
+- *Withdrawal races.* A handle dismissed before its block reaches the modal is recorded
+  first, so the block does not open the alert; one dismissed afterwards is live and is
+  aborted. A dismissal of a handle already finished is ignored.
+- *Room.* `informativeText` does not scroll, and a laid-out alert grows with its text
+  without limit — past the screen's height, measured to 6,500 points — so the check is
+  made on the laid-out alert: taller than the visible area of the shortest screen and the
+  request is refused as `DoesNotFit`, a refusal of its own rather than a presenter failure.
+  Before laying out, a body with more lines than that height holds at 16 points a line is
+  refused the same way, and anything over 4 KiB is refused on bytes (`capacity`): layout
+  runs on the main thread and grew from 120 ms at 4 KiB to 2.4 s at 5.4 KiB, while 4 KiB
+  already overflows a 900-point screen. The parsed fields go in the message text with the
+  title; the body alone is the informative text, since it keeps its newlines and could
+  forge a labelled line if it shared a field with one.
+- *Keys.* Return presses Deny; the affirmative has no key equivalent. The presenter checks
+  both on the built alert and fails rather than show one where either is otherwise.
+- *Focus and settle.* The alert does not take focus. An application that is not frontmost
+  bounces its Dock icon (`requestUserAttention`, critical); the settle interval restarts
+  every time the alert becomes the key window. Measured: coming back to the application
+  and clicking *Allow* landed inside the interval. An *Allow* inside it, or before the
+  alert was ever key, is therefore not an answer — the same alert is run again — rather
+  than a refusal of the request; the gate's own settle check stays behind it.
+
 **Scope, stated so it is not overread.** This decides *who approved*, for requests that reach
 the core. It is a guarantee about the IPC boundary: consent cannot be forged by script in the
 WebView. It is not a guarantee against a process that can synthesise OS input — a CLI

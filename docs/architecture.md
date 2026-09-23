@@ -169,12 +169,15 @@ under the per-user temporary directory, chosen for its length against the 104-by
 path limit. The WebView drives a conversation through the commands in
 `src-tauri/src/conversations.rs` and receives every event on a Tauri channel it passed
 when it started the conversation, mirrored field for field in `src-tauri/src/events.rs`;
-the channel is one way, and no command takes an approval. Until the native alert is
-wired the presenter is the fail-closed one, whose capacity is zero, and the gate checks
-capacity before it tells an asker's observer anything: a call Claude Code delegates is
-therefore refused with no `ApprovalRequested` and no `ApprovalResolved`, surfacing as a
-diagnostic and the CLI's own error tool result. Measured against the real binary, off by
-default, in `src-tauri/tests/real_claude.rs`.
+the channel is one way, and no command takes an approval. The presenter is a native
+`NSAlert` the shell runs on the main thread (`src-tauri/src/presenter.rs`; what was
+measured about it is in `docs/decisions.md`): a call Claude Code delegates reaches the
+WebView as `ApprovalRequested`, is answered on the alert, and reaches it again as
+`ApprovalResolved`. A request the alert cannot show in full is refused before the observer
+is told anything — the gate checks the byte bound first, and the laid-out alert against the
+screen — so it surfaces only as a diagnostic and the CLI's own error tool result, which is
+also what `src-tauri/tests/real_claude.rs` pins against the real binary with a presenter
+that shows nothing.
 
 ## The agent loop
 
