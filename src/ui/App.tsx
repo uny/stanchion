@@ -129,17 +129,22 @@ export function App() {
 }
 
 /**
- * A turn's partial deltas are one line that grows, and the complete message replaces it;
- * every other event is a line of its own.
+ * A message's partial deltas are one line that grows, and the complete message replaces
+ * it where it stands — the message's tool calls arrive between the two. Every other event
+ * is a line of its own.
  */
 function merge(lines: Line[], event: EventRef): Line[] {
-  const last = lines[lines.length - 1];
-  if (last?.event.kind === "message_partial" && last.event.turn === ("turn" in event ? event.turn : null)) {
-    if (event.kind === "message_partial") {
-      return [...lines.slice(0, -1), { key: last.key, event: { ...event, text: last.event.text + event.text } }];
+  if (event.kind === "message_partial" || (event.kind === "message_complete" && event.message.role === "assistant")) {
+    let at = lines.length - 1;
+    for (; at >= 0; at--) {
+      const e = lines[at].event;
+      if ((e.kind === "message_partial" || e.kind === "message_complete") && e.turn === event.turn) break;
     }
-    if (event.kind === "message_complete" && event.message.role === "assistant") {
-      return [...lines.slice(0, -1), { key: last.key, event }];
+    const open = at >= 0 ? lines[at] : undefined;
+    if (open?.event.kind === "message_partial") {
+      const merged: EventRef =
+        event.kind === "message_partial" ? { ...event, text: open.event.text + event.text } : event;
+      return lines.map((l, i) => (i === at ? { key: l.key, event: merged } : l));
     }
   }
   return [...lines, { key: nextKey++, event }];
@@ -153,6 +158,7 @@ function ConversationView({
   call: (command: string, args: Record<string, unknown>) => Promise<boolean>;
 }) {
   const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
   return (
     <article>
       <h2>
@@ -169,15 +175,17 @@ function ConversationView({
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (!text) return;
+          if (!text || sending) return;
           // Cleared only once the core took it: a `Busy` refusal keeps the draft.
+          setSending(true);
           void call("send_input", { conversation: c.id, text }).then((sent) => {
+            setSending(false);
             if (sent) setText((current) => (current === text ? "" : current));
           });
         }}
       >
         <input value={text} onChange={(e) => setText(e.target.value)} disabled={c.exited} placeholder="say something" />
-        <button type="submit" disabled={c.exited}>
+        <button type="submit" disabled={c.exited || sending}>
           Send
         </button>
         <button type="button" onClick={() => void call("interrupt_conversation", { conversation: c.id })} disabled={c.exited}>
