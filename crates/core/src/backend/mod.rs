@@ -129,6 +129,13 @@ impl fmt::Display for SessionId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TurnId(u64);
 
+impl TurnId {
+    /// The number, for a UI that keys its rendering on it.
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 /// One attachment of the core to a session: on a CLI backend one supervised process, on the
 /// native backend one instance of the loop. Core-issued. A session may see several — each
 /// resume is a new one — and a turn an attachment cut is a turn the next one did not
@@ -137,8 +144,9 @@ pub struct TurnId(u64);
 pub struct AttachmentId(u64);
 
 impl AttachmentId {
-    /// The number, for a backend that names a per-attachment resource after it.
-    pub(crate) fn raw(self) -> u64 {
+    /// The number, for a backend that names a per-attachment resource after it, or a UI
+    /// that keys its rendering on it.
+    pub fn raw(self) -> u64 {
         self.0
     }
 }

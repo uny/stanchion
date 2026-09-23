@@ -780,6 +780,19 @@ request open for as long as the first one takes; on 2.1.266 a request answered a
 30 minutes (5, 15 and 30 measured, three CLIs in parallel) was still acted on, so the queue is bounded by the user, not by the CLI, at least that
 far; past it is not measured.
 
+*Where the shell gets the helper and the binary* (the shell slice): the helper is the
+shell's own executable run with `--prompt-helper`, not a second binary copied into the
+bundle. `tauri-build` copies a declared sidecar during the shell's build script and fails
+when the file is absent, so a sidecar helper would put a build-and-copy step in front of
+every `cargo` invocation on the workspace and could leave a stale helper beside a fresh
+application; the executable the application already is cannot be stale or missing, and
+the core's `stanchion-prompt-helper` binary stays for the tests, on the same body. The
+`claude` binary is likewise resolved at startup — the process's `PATH`, the usual install
+directories, then the login shell's `PATH` — and never read from a settings file, the same
+rule the helper is under; whether a settings value may ever name it is left open, and
+until it is decided a binary the user has to point at is a binary the user installs where
+the shell looks.
+
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that
 names either; a

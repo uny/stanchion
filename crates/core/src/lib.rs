@@ -145,6 +145,7 @@
 pub mod backend;
 pub mod consent;
 pub mod execute;
+pub mod prompt_helper;
 
 /// The core's version, as compiled.
 ///

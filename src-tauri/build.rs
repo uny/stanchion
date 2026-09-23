@@ -7,8 +7,16 @@ fn main() {
     // Every command in `invoke_handler!` belongs in this list, and each one also needs the
     // matching `allow-` identifier in `capabilities/default.json` — a widening that
     // AGENTS.md section 5 requires the pull request to state.
-    let attributes = tauri_build::Attributes::new()
-        .app_manifest(tauri_build::AppManifest::new().commands(&["core_version"]));
+    let attributes =
+        tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
+            "core_version",
+            "backend_status",
+            "start_conversation",
+            "send_input",
+            "interrupt_conversation",
+            "terminate_conversation",
+            "resume_conversation",
+        ]));
     // `expect` rather than bare `build()`, which takes no attributes. Bare `build()` also
     // prints a hint that this crate has fallen behind the CLI; keep it, since the two are
     // pinned in different lockfiles and drift on their own.

@@ -18,3 +18,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 stanchion-core = { path = "../crates/core" }
+# For the event mirror the WebView receives (`events`). The core links no serialisation
+# library; the shell may, since it is the IPC boundary and nothing it serialises is a
+# token.
+serde = { version = "1", features = ["derive"] }

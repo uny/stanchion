@@ -8,11 +8,12 @@ body {
 }
 
 main {
-  display: grid;
-  place-content: center;
-  gap: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
   height: 100vh;
-  text-align: center;
+  padding: 0.75rem;
+  box-sizing: border-box;
 }
 
 h1 {
@@ -21,7 +22,76 @@ h1 {
   font-weight: 600;
 }
 
+h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
 p {
   margin: 0;
   opacity: 0.7;
+}
+
+p[role="alert"] {
+  opacity: 1;
+  color: #c0392b;
+}
+
+form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+form input {
+  flex: 1;
+  min-width: 0;
+}
+
+.conversations {
+  display: flex;
+  gap: 0.75rem;
+  flex: 1;
+  min-height: 0;
+}
+
+article {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 6px;
+  padding: 0.5rem;
+}
+
+.path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+}
+
+.transcript {
+  flex: 1;
+  margin: 0;
+  padding: 0 0 0 1.5rem;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.transcript li.message_partial {
+  opacity: 0.6;
+}
+
+.transcript li.approval_requested,
+.transcript li.approval_resolved,
+.transcript li.ran_without_asking {
+  font-weight: 600;
+}
+
+.transcript li.diagnostic {
+  opacity: 0.6;
 }
