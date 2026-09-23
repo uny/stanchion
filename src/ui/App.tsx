@@ -35,6 +35,7 @@ export function App() {
   const [account, setAccount] = useState("");
   const [workspaceRoot, setWorkspaceRoot] = useState("");
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [starting, setStarting] = useState(false);
 
   useEffect(() => {
     invoke<string>("core_version")
@@ -49,6 +50,8 @@ export function App() {
     setConversations((all) => all.map((c) => (c.id === id ? f(c) : c)));
 
   const start = async () => {
+    if (starting) return;
+    setStarting(true);
     setError(null);
     const channel = new Channel<ConversationEvent>();
     let id: number | null = null;
@@ -69,6 +72,8 @@ export function App() {
       for (const event of pending) append(id, event);
     } catch (cause) {
       setError(String(cause));
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -115,7 +120,7 @@ export function App() {
           value={workspaceRoot}
           onChange={(e) => setWorkspaceRoot(e.target.value)}
         />
-        <button type="submit" disabled={backendError !== null || !account || !workspaceRoot}>
+        <button type="submit" disabled={backendError !== null || starting || !account || !workspaceRoot}>
           Start conversation
         </button>
       </form>
