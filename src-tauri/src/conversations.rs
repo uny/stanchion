@@ -6,8 +6,9 @@
 //! synchronous command would block the main thread with them — and returns what the core
 //! said. Nothing here takes or relays an approval decision; the presenter is the gate's
 //! (`presenter`), and until the native alert is wired it is [`crate::presenter::FailClosed`],
-//! so every request the CLI delegates is refused and the WebView sees the refusal as an
-//! `ApprovalResolved { allowed: false }` it can render.
+//! whose capacity is zero: every request the CLI delegates is refused before it is
+//! presented, with no `ApprovalRequested` or `ApprovalResolved`, and the WebView sees the
+//! refusal as a `Diagnostic` and the CLI's own error `ToolResult`.
 //!
 //! Resume: a `SessionId` reaches the WebView in `SessionOpened`, and the WebView asks for
 //! a resume by the conversation it was opened in; the shell resumes the session that
