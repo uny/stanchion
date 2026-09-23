@@ -180,9 +180,9 @@ impl Consent {
     /// what is being asked before it is answered: the return value names the invocation
     /// only when a token was minted. A request the policy refuses, or that is over the
     /// presenter's capacity or past the queue limit, is refused before the observer is
-    /// called, so it is never told of a request that will not be shown. One the presenter
-    /// lays out and finds too tall ([`Refusal::DoesNotFit`]) is the exception: that is
-    /// known only inside `show`, after the observer was called. No gate lock is
+    /// called, so it is never told of a request that will not be shown. What only `show`
+    /// can find out — a request laid out too tall ([`Refusal::DoesNotFit`]), a presenter
+    /// that fails — comes after the observer was called. No gate lock is
     /// held across the call, so the observer may call back into the gate — [`cancel`]
     /// included, which withdraws the request before it is presented — but not ask.
     ///
