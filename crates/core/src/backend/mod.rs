@@ -618,7 +618,11 @@ pub trait Session: sealed::Sealed + Send + Sync {
 
     /// Ends the attachment. Idempotent, and `Ok` once the request to end has been made;
     /// the end itself is observed as [`Event::Exited`] with [`Exit::Terminated`], which
-    /// the backend can only emit once the consent run is over.
+    /// the backend can only emit once the consent run is over. A backend whose process
+    /// starts processes of its own — a tool call's shell — ends those it can still find
+    /// under it too, before it returns: an approved command must not run on after its
+    /// run was ended. What one already did is not undone, and one that left the tree
+    /// first is not found.
     fn terminate(&self) -> Result<(), BackendError>;
 
     /// Usage for the attachment so far, as the backend reports it.

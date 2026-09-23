@@ -2907,6 +2907,7 @@ dependencies = [
 name = "stanchion-core"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "sha2",
 ]
 

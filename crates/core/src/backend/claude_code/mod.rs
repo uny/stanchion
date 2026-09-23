@@ -91,6 +91,7 @@ mod approval;
 pub mod json;
 #[cfg(test)]
 mod tests;
+mod tree;
 
 pub use approval::SocketDir;
 use approval::{Asked, Listener};
@@ -363,6 +364,9 @@ impl ClaudeCode {
         for key in INHERITED_CREDENTIALS {
             command.env_remove(key);
         }
+        // A group of its own, so `terminate` can signal the CLI's group whole without
+        // signalling this process (`tree`).
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1195,18 +1199,25 @@ impl Session for ClaudeSession {
     }
 
     fn terminate(&self) -> Result<(), BackendError> {
+        // The child lock first and for the whole of it: a second call returns only once
+        // the first one's signals are sent, and the reader cannot reap the CLI — which
+        // would free its pid for reuse — while its tree is being walked.
+        let mut child = self.shared.child.lock().unwrap();
         {
             let mut state = self.shared.state.lock().unwrap();
             if state.ended || std::mem::replace(&mut state.terminated, true) {
                 return Ok(());
             }
         }
-        // Closing stdin is the CLI's own way out, but nothing waits for it to take it: the
-        // kill follows at once, so the CLI's own end-of-session work (its hooks, a last
-        // write) is cut short. A grace period before the kill is a later slice's. The
-        // reader observes the exit and emits `Exited`.
+        // The tree before stdin: a CLI that sees EOF exits, and its tools are reparented
+        // out of reach before they are found (`tree`). Nothing waits for the CLI's own
+        // end-of-session work (its hooks, a last write); it is cut short. The reader
+        // observes the exit and emits `Exited`.
+        if let Ok(None) = child.try_wait() {
+            tree::kill(child.id());
+        }
+        drop(child);
         *self.shared.stdin.lock().unwrap() = None;
-        let _ = self.shared.child.lock().unwrap().kill();
         Ok(())
     }
 

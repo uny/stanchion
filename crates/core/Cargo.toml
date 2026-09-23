@@ -15,3 +15,6 @@ license.workspace = true
 # Content and prior-file hashes bound into a consent token (`consent::request`). A
 # non-cryptographic hash would let a write be substituted for one with a colliding digest.
 sha2 = "0.10"
+# Stopping and killing the process tree under a supervised CLI (`backend::claude_code::tree`):
+# `proc_listallpids`, `proc_pidinfo` and `killpg`, which `std` does not expose.
+libc = "0.2"

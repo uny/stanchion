@@ -20,6 +20,7 @@
 #   Either path may name a directory: the file is then `<path>/<account>`, where
 #   `<account>` is the last component of CLAUDE_CONFIG_DIR, so two accounts run from
 #   one backend (one environment) keep separate logs and are released separately.
+#   FAKE_CLAUDE_TOOLS=path     prefix for the markers of the "tools" turn (below)
 #   FAKE_CLAUDE_ASK=1          on the default turn, ask about `toolu_denied` the way the
 #                              real CLI does: spawn the helper named in --mcp-config, drive
 #                              the MCP handshake and one tools/call, and act on the reply
@@ -42,6 +43,9 @@ if [ -n "${FAKE_CLAUDE_STATE:-}" ]; then
 fi
 if [ -n "${FAKE_CLAUDE_HOLD:-}" ]; then
   FAKE_CLAUDE_HOLD=$(per_account "$FAKE_CLAUDE_HOLD")
+fi
+if [ -n "${FAKE_CLAUDE_TOOLS:-}" ]; then
+  FAKE_CLAUDE_TOOLS=$(per_account "$FAKE_CLAUDE_TOOLS")
 fi
 
 SESSION="00000000-0000-0000-0000-000000000000"
@@ -126,6 +130,19 @@ while IFS= read -r line; do
           # call in flight that the interrupt cuts.
           printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"working"}}}'
           printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"tool_use","id":"toolu_cut","name":"Bash","input":{"command":"sleep 600"}}]}}'
+          continue
+          ;;
+        *'"text":"tools"'*)
+          # A turn whose call is running, as the real CLI runs a Bash call (measured on
+          # 2.1.280): a command in a session of its own, which a kill of this process or
+          # of its group does not reach. And one child left in this process's group. Each
+          # writes `<prefix>.<name>.started` at once and `<prefix>.<name>` three seconds
+          # later, unless killed first; neither holds this process's pipes.
+          tools="${FAKE_CLAUDE_TOOLS:?}"
+          perl -MPOSIX -e 'POSIX::setsid() or die; open(F, ">", "$ARGV[0].started"); close F; sleep 3; open(F, ">", $ARGV[0]); close F' \
+            "$tools.session" </dev/null >/dev/null 2>&1 &
+          ( : > "$tools.group.started"; sleep 3; : > "$tools.group" ) </dev/null >/dev/null 2>&1 &
+          printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"tool_use","id":"toolu_running","name":"Bash","input":{"command":"sleep 3 && touch marker"}}]}}'
           continue
           ;;
         *'"text":"die"'*)
