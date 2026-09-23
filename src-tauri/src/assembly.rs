@@ -156,7 +156,8 @@ pub fn socket_dir() -> std::io::Result<SocketDir> {
     SocketDir::new(std::env::temp_dir().join("stanchion"))
 }
 
-/// The bytes a socket path may have on this platform; a longer one is refused at bind.
+/// The bytes of `sun_path` on this platform. A socket path takes one of them for its
+/// terminating NUL, so one of this length or longer is refused at bind.
 #[cfg(target_os = "macos")]
 pub const SOCKET_PATH_MAX: usize = 104;
 #[cfg(not(target_os = "macos"))]
@@ -194,9 +195,9 @@ pub fn backend(app_data_dir: &Path) -> Result<ClaudeCode, String> {
     let root = config_root(app_data_dir).map_err(|e| format!("config root: {e}"))?;
     let helper = helper().map_err(|e| format!("helper: {e}"))?;
     let sockets = socket_dir().map_err(|e| format!("socket directory: {e}"))?;
-    if longest_socket_path(&sockets) > SOCKET_PATH_MAX {
+    if longest_socket_path(&sockets) >= SOCKET_PATH_MAX {
         return Err(format!(
-            "socket directory {} leaves a socket path over {SOCKET_PATH_MAX} bytes",
+            "socket directory {} leaves a socket path of {SOCKET_PATH_MAX} bytes or more",
             sockets.path().display()
         ));
     }
@@ -332,6 +333,6 @@ mod tests {
     fn the_socket_directory_leaves_room_for_a_socket_path() {
         let dir = socket_dir().unwrap();
         let longest = longest_socket_path(&dir);
-        assert!(longest <= SOCKET_PATH_MAX, "{longest} bytes");
+        assert!(longest < SOCKET_PATH_MAX, "{longest} bytes");
     }
 }
