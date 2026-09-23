@@ -3,7 +3,7 @@
 //!
 //!     cargo run -p stanchion --example alert_probe -- <scenario>
 //!
-//! Scenarios: `withdraw`, `early`, `queued`, `fit`, `human`.
+//! Scenarios: `withdraw`, `early`, `queued`, `fit`, `early-click`, `human`.
 
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -140,7 +140,8 @@ fn main() {
                                 (0..lines).map(|i| format!("echo line {i}")).collect();
                             eprintln!("[{:>5}ms] {lines} lines", t0.elapsed().as_millis());
                             let (inv, j) = ask(&gate, run, body.join("\n"), t0, "fit");
-                            // Refused before it was presented: no invocation to cancel.
+                            // Over the byte bound: refused before anyone is told, nothing to
+                            // cancel. Too tall once laid out: announced, then refused.
                             if let Ok(inv) = inv.recv() {
                                 at(1500);
                                 gate.cancel(inv);
