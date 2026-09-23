@@ -24,8 +24,8 @@ pub const CLAUDE: &str = "claude";
 /// Relative entries are under the home directory.
 pub const KNOWN_DIRS: [&str; 3] = [".local/bin", "/opt/homebrew/bin", "/usr/local/bin"];
 
-/// Finds the `claude` to run. In order: the `PATH` this process has, the known install
-/// directories, and the user's login shell's `PATH` — the last spawns `$SHELL -lc`, and
+/// Finds the `claude` to run. In order: the `PATH` this process has, the candidates in
+/// `known` (the known install directories, [`known_dirs`]), and the user's login shell's `PATH` — the last spawns `$SHELL -lc`, and
 /// is asked once at startup. A login shell reads `.zprofile` and `.zshenv`, not `.zshrc`,
 /// so a `PATH` addition made there is not seen; the known directories are what find the
 /// usual installs. The result is a path to a file this process may execute — the
@@ -36,13 +36,13 @@ pub const KNOWN_DIRS: [&str; 3] = [".local/bin", "/opt/homebrew/bin", "/usr/loca
 /// than that runs is the shell slice's measurement, not this function's.
 pub fn resolve_claude(
     path: Option<&std::ffi::OsStr>,
-    home: Option<&Path>,
+    known: &[PathBuf],
     shell: Option<&Path>,
 ) -> Option<PathBuf> {
     if let Some(found) = path.and_then(|p| find_in_path(p, CLAUDE)) {
         return Some(found);
     }
-    if let Some(found) = known_dirs(home).into_iter().find_map(|d| executable(&d)) {
+    if let Some(found) = known.iter().find_map(|d| executable(d)) {
         return Some(found);
     }
     let output = ask_login_shell(shell?)?;
@@ -183,7 +183,7 @@ pub fn config_root(app_data_dir: &Path) -> std::io::Result<ConfigRoot> {
 pub fn backend(app_data_dir: &Path) -> Result<ClaudeCode, String> {
     let binary = resolve_claude(
         std::env::var_os("PATH").as_deref(),
-        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+        &known_dirs(std::env::var_os("HOME").map(PathBuf::from).as_deref()),
         std::env::var_os("SHELL").map(PathBuf::from).as_deref(),
     )
     .ok_or_else(|| {
@@ -232,6 +232,15 @@ mod tests {
         Dir(d)
     }
 
+    /// The known candidates under `home` only: the absolute ones are this machine's own
+    /// install directories, and a `claude` installed there would answer every test.
+    fn under(home: &Path) -> Vec<PathBuf> {
+        known_dirs(Some(home))
+            .into_iter()
+            .filter(|p| p.starts_with(home))
+            .collect()
+    }
+
     fn place(dir: &Path, mode: u32) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
         let p = dir.join(CLAUDE);
@@ -249,7 +258,7 @@ mod tests {
         place(&home.join(".local/bin"), 0o755);
         let found = resolve_claude(
             Some(on_path.as_os_str()),
-            Some(&home),
+            &under(&home),
             Some(Path::new("/nonexistent/shell")),
         );
         assert_eq!(found, Some(wanted));
@@ -260,7 +269,7 @@ mod tests {
         let home = dir("home2");
         std::fs::create_dir_all(home.join(".local/bin")).unwrap();
         let wanted = place(&home.join(".local/bin"), 0o755);
-        let found = resolve_claude(None, Some(&home), Some(Path::new("/nonexistent/shell")));
+        let found = resolve_claude(None, &under(&home), Some(Path::new("/nonexistent/shell")));
         assert_eq!(found, Some(wanted));
     }
 
@@ -268,7 +277,7 @@ mod tests {
     fn a_file_without_the_execute_bit_is_not_the_binary() {
         let on_path = dir("noexec");
         place(&on_path, 0o644);
-        let found = resolve_claude(Some(on_path.as_os_str()), None, None);
+        let found = resolve_claude(Some(on_path.as_os_str()), &[], None);
         assert_eq!(found, None);
     }
 
@@ -289,7 +298,7 @@ mod tests {
             &d,
             &format!("echo 'welcome back'\necho {}", wanted.display()),
         );
-        let found = resolve_claude(None, None, Some(&shell));
+        let found = resolve_claude(None, &[], Some(&shell));
         assert_eq!(found, Some(wanted));
     }
 
@@ -299,7 +308,7 @@ mod tests {
         // What `command -v` prints for an alias, and a path that does not exist.
         for answer in ["alias claude='claude --foo'", "/nonexistent/claude"] {
             let shell = fake_shell(&d, &format!("echo \"{answer}\""));
-            assert_eq!(resolve_claude(None, None, Some(&shell)), None, "{answer}");
+            assert_eq!(resolve_claude(None, &[], Some(&shell)), None, "{answer}");
         }
     }
 
@@ -308,7 +317,7 @@ mod tests {
         let d = dir("shell-hang");
         let shell = fake_shell(&d, "sleep 30");
         let started = Instant::now();
-        assert_eq!(resolve_claude(None, None, Some(&shell)), None);
+        assert_eq!(resolve_claude(None, &[], Some(&shell)), None);
         assert!(started.elapsed() < LOGIN_SHELL_TIMEOUT + Duration::from_secs(2));
     }
 
@@ -317,7 +326,7 @@ mod tests {
         // A bare `claude` would let the CLI's `PATH` at spawn time decide, which is not
         // the `PATH` the user was shown at startup.
         assert_eq!(
-            resolve_claude(None, None, Some(Path::new("/nonexistent/shell"))),
+            resolve_claude(None, &[], Some(Path::new("/nonexistent/shell"))),
             None
         );
     }

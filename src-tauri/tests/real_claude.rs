@@ -82,9 +82,11 @@ fn a_delegated_call_reaches_the_gate_and_the_fail_closed_presenter_refuses_it() 
 
     let binary = assembly::resolve_claude(
         std::env::var_os("PATH").as_deref(),
-        std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .as_deref(),
+        &assembly::known_dirs(
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .as_deref(),
+        ),
         std::env::var_os("SHELL")
             .map(std::path::PathBuf::from)
             .as_deref(),
