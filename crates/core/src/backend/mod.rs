@@ -272,14 +272,22 @@ pub enum ApprovalReach {
 /// What a resumed session was *observed* to do with a turn that was cut, on the backend
 /// version named in [`Capabilities::measured_on`]. Per cause, from measurement, never from
 /// documentation (#42). A promise about a later version is not one this type makes.
+///
+/// None of these says whether the cut call ran. The result the backend reports for it
+/// — rejected, or an error — is the backend's, not an outcome: Claude Code 2.1.280 reported
+/// "rejected" for a command that had run in part, and the model repeated that. And a
+/// re-issued call passes through approval only where the backend delegates it; one the
+/// backend's own rules allow is re-run with no dialog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CutTurn {
     /// The cut call is reported to the model as rejected, and the model asks before it
-    /// continues. Claude Code after `interrupt` (#42).
+    /// continues. Claude Code after a SIGINT (#42, 2.1.266) and after the stream-json
+    /// interrupt its backend sends (2.1.280).
     AsksBeforeContinuing,
     /// The cut call is reported as an error and the model may re-issue it as a new call,
     /// which passes through approval again but is not the user's decision to re-run.
-    /// Claude Code after a crash (#42).
+    /// Claude Code after a crash: it re-issued on 2.1.266 (#42); on 2.1.280, once
+    /// observed, it looked first instead — a model's choice, so "may" stands.
     MayRerun,
     /// Not measured for this backend and cause. The UI says so rather than promising either.
     Unmeasured,
@@ -299,8 +307,9 @@ pub struct Capabilities {
     pub after_interrupt: CutTurn,
     /// After the attachment ended without being asked to.
     pub after_crash: CutTurn,
-    /// The backend version the two `CutTurn`s were measured on, as the backend reports
-    /// its version — `"claude 2.1.266"` — or `"none"` when unmeasured.
+    /// The backend version the two `CutTurn`s were last measured on, as the backend
+    /// reports its version — `"claude 2.1.280"` — or `"none"` when unmeasured. Where an
+    /// earlier version behaved otherwise, the variant's own doc says so.
     pub measured_on: &'static str,
 }
 

@@ -97,8 +97,8 @@ pub use approval::SocketDir;
 use approval::{Asked, Listener};
 use json::Value;
 
-/// The backend version the cut-turn capabilities were measured on (#42).
-const MEASURED_ON: &str = "claude 2.1.266";
+/// The backend version the cut-turn capabilities were last measured on (#42, #46).
+const MEASURED_ON: &str = "claude 2.1.280";
 
 /// How long the reader waits for the process to be reaped after its stdout closed before
 /// asking again. Polled rather than `wait`ed so that `terminate` can take the child lock
@@ -461,10 +461,11 @@ impl RunBackend for ClaudeCode {
             // user's own input, the inbox queue for a delivery) until the turn ends.
             mid_turn_input: false,
             approvals: ApprovalReach::Delegated,
-            // #42 measured SIGINT, which ends the process. `interrupt` here sends the
-            // stream-json control request instead and keeps the process; what a resume
-            // does after that is not yet measured, and this says so rather than inherit.
-            after_interrupt: CutTurn::Unmeasured,
+            // #42 measured SIGINT, which ends the process; `interrupt` here sends the
+            // stream-json control request and keeps it. Measured in the application on
+            // 2.1.280: the CLI ends the running tool, reports the call rejected, and
+            // after a resume the model waited to be told rather than re-issue it.
+            after_interrupt: CutTurn::AsksBeforeContinuing,
             after_crash: CutTurn::MayRerun,
             measured_on: MEASURED_ON,
         }

@@ -827,9 +827,39 @@ rule the helper is under; whether a settings value may ever name it is left open
 until it is decided a binary the user has to point at is a binary the user installs where
 the shell looks.
 
+*Interrupt, crash and terminate, measured in the GUI* (#46; `claude` 2.1.280, one
+conversation, the native alert answering). Each observed once, in the application:
+
+| Cut by | While | Observed |
+|:--|:--|:--|
+| Interrupt (the stream-json control request) | an approved `touch m && perl -e 'sleep 60'` ran | the CLI ended the tool's process group; the tool result read "rejected … STOP"; the model stopped |
+| the same, then terminate and resume | — | asked with a neutral prompt, the model did not re-issue the call and waited |
+| SIGKILL of the CLI | the approved command ran | turn cut, `Exited` crashed, Resume available; after resume the model checked with `ls` rather than re-issue (on 2.1.266, #42, it re-issued) |
+| SIGKILL of the CLI | the alert was up | the alert was withdrawn, nothing ran, the window stayed usable |
+| Terminate, and quitting the application | the approved command ran | **before this slice:** the command ran to its end, reparented to launchd |
+
+Three things follow. *A cut call's result does not say whether it ran:* `touch m` had run
+every time the CLI reported the call rejected or failed, and the model, reading that result,
+told the user nothing had run until it looked. Only stanchion's own record — the approval
+allowed, then the turn cut — is right, so the UI must not repeat the model's account of a
+cut call. *Terminate has to reach the tools:* a Bash call runs as a shell in a session of
+its own, so killing the CLI, or its process group, does not; `terminate` now stops the CLI,
+walks its descendants and kills their groups before the CLI (`backend/claude_code/tree.rs`),
+and the shell terminates every conversation as the application exits. It is not a promise
+that nothing runs on: a descendant that daemonised, and every descendant of a CLI that
+ended without `terminate`, are outside the tree by the time anyone looks, and what a
+command already did stays done. *The alert is app-modal:* while it is up, Interrupt,
+Terminate and Quit do nothing, and the way out is to answer it — Deny is the stop. That is
+the state the window returns to usability from, and making a pending dialog itself
+interruptible is a follow-up, not part of this slice. Also seen: the CLI allows a
+background `sleep 60 && date` on its own (reported as `RanWithoutAsking`), and it starts a
+turn of its own when a background task finishes, which the backend reports only as
+diagnostics outside a turn.
+
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that
 names either; a
 capability read on the approval path; a backend that reports usage as zero when it has not
 reported it; a cost figure shown as a subscription's bill; a helper path or MCP
-configuration read from a settings file the model can reach; a second relay for the bridge.
+configuration read from a settings file the model can reach; a second relay for the bridge;
+a terminate that ends the CLI and leaves the command it was running.
