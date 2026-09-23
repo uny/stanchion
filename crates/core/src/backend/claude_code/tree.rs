@@ -18,9 +18,10 @@
 //!
 //! What this cannot reach, and does not claim to: a descendant that left the tree before
 //! the walk (a daemon that double-forked, or anything reparented because the process
-//! between it and the CLI had already exited), and every descendant of a CLI that ended
-//! without `terminate` — a crash reparents them before the core learns of it. What an
-//! approved command already did is not undone either.
+//! between it and the CLI had already exited), one still being found when the walk's time
+//! bound ran out, and every descendant of a CLI that ended without `terminate` — a crash
+//! reparents them before the core learns of it. What an approved command already did is
+//! not undone either.
 
 /// Stops the tree under `root`, a live, unreaped child of this process that was spawned as
 /// the leader of its own process group, and kills it. Never signals this process's own
