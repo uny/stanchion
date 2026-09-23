@@ -294,11 +294,6 @@ fn run_alert(
         return;
     }
 
-    let app = NSApplication::sharedApplication(mtm);
-    if !app.isActive() {
-        app.requestUserAttention(NSRequestUserAttentionType::CriticalRequest);
-    }
-
     // Each time the alert becomes key the settle interval starts again, so a click aimed at
     // another window cannot land on it the moment it comes forward.
     let responder = Arc::new(Mutex::new(Some(responder)));
@@ -342,6 +337,11 @@ fn run_alert(
         }
         s.live = Some(id);
     }
+    let app = NSApplication::sharedApplication(mtm);
+    // A critical request bounces until the application is activated or it is cancelled, so
+    // an alert withdrawn while the application stays behind must cancel its own.
+    let attention = (!app.isActive())
+        .then(|| app.requestUserAttention(NSRequestUserAttentionType::CriticalRequest));
     let response = loop {
         let response = alert.runModal();
         let key_at = key.lock().map(|k| *k).unwrap_or(None);
@@ -353,6 +353,9 @@ fn run_alert(
         break response;
     };
     lock(state).live = None;
+    if let Some(request) = attention {
+        app.cancelUserAttentionRequest(request);
+    }
     // SAFETY: the observer was returned by `addObserverForName:` above.
     unsafe { NSNotificationCenter::defaultCenter().removeObserver(observer.as_ref()) };
 
