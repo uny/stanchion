@@ -826,6 +826,15 @@ fn a_request_the_presenter_cannot_fit_is_refused_as_not_fitting_not_as_a_failure
         Err(Refusal::DoesNotFit)
     );
     assert_eq!(presenter.shown().len(), 1, "it was laid out, then refused");
+
+    // Unlike the byte bound, this is found out inside `show`: the observer has been told.
+    let mut told = 0;
+    assert_eq!(
+        gate.ask_observed(shell_spec(run, ws.path(), "ls"), &mut |_| told += 1)
+            .map(|_| ()),
+        Err(Refusal::DoesNotFit)
+    );
+    assert_eq!(told, 1);
 }
 
 #[test]

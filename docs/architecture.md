@@ -173,11 +173,13 @@ the channel is one way, and no command takes an approval. The presenter is a nat
 `NSAlert` the shell runs on the main thread (`src-tauri/src/presenter.rs`; what was
 measured about it is in `docs/decisions.md`): a call Claude Code delegates reaches the
 WebView as `ApprovalRequested`, is answered on the alert, and reaches it again as
-`ApprovalResolved`. A request the alert cannot show in full is refused before the observer
-is told anything — the gate checks the byte bound first, and the laid-out alert against the
-screen — so it surfaces only as a diagnostic and the CLI's own error tool result, which is
-also what `src-tauri/tests/real_claude.rs` pins against the real binary with a presenter
-that shows nothing.
+`ApprovalResolved`. A request over the alert's byte bound is refused before the observer is
+told anything, so it surfaces only as a diagnostic and the CLI's own error tool result,
+which is also what `src-tauri/tests/real_claude.rs` pins against the real binary with a
+presenter that shows nothing. One under the bound that the laid-out alert finds taller than
+the screen is refused only inside the presenter, after the observer was told: it reaches
+the WebView as `ApprovalRequested`, `ApprovalResolved` refused, and a diagnostic naming the
+reason.
 
 ## The agent loop
 

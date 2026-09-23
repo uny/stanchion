@@ -103,7 +103,8 @@ impl Responder {
     /// Reports that the request, laid out, cannot be shown in full, so it was not shown.
     /// The byte bound in [`ConsentPresenter::capacity`] is checked before `show`; this is
     /// the check only the laid-out dialog can make — line breaks, wrapping, the screen it
-    /// is on — and it refuses the request exactly as the byte bound does.
+    /// is on. The request is refused as the byte bound refuses it, with one difference: this
+    /// comes after [`crate::consent::Consent::ask_observed`] has told its observer.
     pub fn does_not_fit(mut self) {
         self.answered = true;
         let _ = self.tx.send(Outcome::DoesNotFit);

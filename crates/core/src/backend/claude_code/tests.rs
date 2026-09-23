@@ -1028,6 +1028,20 @@ impl ConsentPresenter for Allows {
     fn dismiss(&self, _: Handle) {}
 }
 
+/// Lays every request out and finds it too tall for the screen.
+struct DoesNotFit;
+
+impl ConsentPresenter for DoesNotFit {
+    fn capacity(&self) -> usize {
+        1 << 16
+    }
+    fn show(&self, _: &Rendered, responder: Responder) -> Result<Handle, PresenterError> {
+        responder.does_not_fit();
+        Ok(Handle(1))
+    }
+    fn dismiss(&self, _: Handle) {}
+}
+
 /// Never answers: keeps every responder until dropped, as a dialog nobody clicks.
 #[derive(Default)]
 struct Holds {
@@ -1218,6 +1232,47 @@ fn an_allowed_request_is_the_execution() {
         all.last(),
         Some(Event::ApprovalResolved { turn: t, allowed: true, .. }) if *t == turn
     ));
+    release(&hold);
+    events.wait_for("TurnEnded", is_turn_ended);
+}
+
+#[test]
+fn a_request_that_does_not_fit_is_resolved_refused_and_says_why() {
+    // Announced before the presenter lays it out, so it resolves like any other; the
+    // diagnostic is what tells anyone that no dialog was ever on screen.
+    let dirs = Dirs::new("does-not-fit");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs).env(
+        "FAKE_CLAUDE_HOLD",
+        dirs.base.join("release").to_str().unwrap(),
+    );
+    let session = start_with(&backend, &dirs, &events, gate_with(Arc::new(DoesNotFit)));
+    let (turn, hold) = held_turn(&dirs, session.as_ref(), &events);
+
+    let reply = ask(
+        &socket_of(&dirs, session.as_ref()),
+        &bash_request("toolu_denied", "ls"),
+    );
+    assert!(reply.contains(r#""behavior":"deny""#), "{reply}");
+    let all = events.wait_for(
+        "Diagnostic",
+        |e| matches!(e, Event::Diagnostic { text } if text.contains("does not fit")),
+    );
+    let requested = all
+        .iter()
+        .position(|e| matches!(e, Event::ApprovalRequested { .. }))
+        .unwrap();
+    let resolved = all
+        .iter()
+        .position(
+            |e| matches!(e, Event::ApprovalResolved { turn: t, allowed: false, .. } if *t == turn),
+        )
+        .unwrap();
+    let diagnostic = all
+        .iter()
+        .position(|e| matches!(e, Event::Diagnostic { text } if text.contains("does not fit")))
+        .unwrap();
+    assert!(requested < resolved && resolved < diagnostic);
     release(&hold);
     events.wait_for("TurnEnded", is_turn_ended);
 }

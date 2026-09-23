@@ -10,7 +10,8 @@ import { describe } from "./events";
  * (#46). Nothing here answers an approval; the dialog is the shell's native alert, and
  * this view only reports what happened to it: an approval event when a request is shown
  * and when it is answered, or — for a request too long to show in full — a diagnostic and
- * an error tool result instead.
+ * an error tool result, preceded by a refused approval event when the alert learned that
+ * only once laid out.
  */
 
 interface Conversation {

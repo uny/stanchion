@@ -6,9 +6,11 @@
 //! synchronous command would block the main thread with them — and returns what the core
 //! said. Nothing here takes or relays an approval decision; the presenter is the gate's
 //! ([`crate::presenter::NativeAlert`]), and the WebView learns of a request and of its
-//! answer only as `ApprovalRequested` and `ApprovalResolved`. A request the alert cannot
-//! show in full is refused before anyone is told of it, and reaches the WebView as a
-//! `Diagnostic` and the CLI's own error `ToolResult`.
+//! answer only as `ApprovalRequested` and `ApprovalResolved`. A request over the alert's
+//! byte bound is refused before anyone is told of it, and reaches the WebView as a
+//! `Diagnostic` and the CLI's own error `ToolResult`; one under it that the laid-out alert
+//! finds too tall has already been announced, so it resolves refused and is followed by
+//! that `Diagnostic`.
 //!
 //! Resume: a `SessionId` reaches the WebView in `SessionOpened`, and the WebView asks for
 //! a resume by the conversation it was opened in; the shell resumes the session that
