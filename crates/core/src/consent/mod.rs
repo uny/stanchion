@@ -250,6 +250,7 @@ impl Consent {
         let (answer, at, opened) = match outcome {
             Ok(Outcome::Answered { answer, at, opened }) => (answer, at, opened),
             Ok(Outcome::Failed(e)) => return Err(Refusal::PresenterFailed(e.0)),
+            Ok(Outcome::DoesNotFit) => return Err(Refusal::DoesNotFit),
             Ok(Outcome::Withdrawn) => return Err(Refusal::Withdrawn),
             Err(r) => return Err(r),
         };

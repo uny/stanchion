@@ -47,6 +47,8 @@ pub enum Refusal {
     UnknownRun,
     /// The presenter cannot show the request in full.
     OverCapacity { bytes: usize, capacity: usize },
+    /// The presenter laid the request out and it cannot be shown in full.
+    DoesNotFit,
     /// The presentation queue is at its limit.
     QueueFull,
     /// The user declined.
@@ -78,6 +80,7 @@ impl fmt::Display for Refusal {
                 f,
                 "refused: {bytes} bytes cannot be shown in full (capacity {capacity})"
             ),
+            Refusal::DoesNotFit => write!(f, "refused: the request does not fit on screen"),
             Refusal::QueueFull => write!(f, "refused: too many requests pending"),
             Refusal::Declined => write!(f, "declined"),
             Refusal::TooSoon => write!(f, "declined: answered before the dialog settled"),
