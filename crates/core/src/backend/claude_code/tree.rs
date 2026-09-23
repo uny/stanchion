@@ -12,9 +12,9 @@
 //! looking again until a pass finds none, since a descendant that was already running can
 //! still fork; then kill every process group the CLI or a descendant leads — the CLI's
 //! own is dedicated to it, because the CLI is spawned as a group leader — and any other
-//! descendant alone, and last the CLI. A process is identified by its pid *and* its start time, and each
-//! group is checked again just before the signal, so a pid or group id reused since the
-//! walk is not signalled.
+//! descendant alone, and last the CLI. A process is identified by its pid *and* its start
+//! time, and each is checked again just before the signal, so a pid or group id reused
+//! since the walk is not signalled.
 //!
 //! What this cannot reach, and does not claim to: a descendant that left the tree before
 //! the walk (a daemon that double-forked, or anything reparented because the process
