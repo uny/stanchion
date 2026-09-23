@@ -74,6 +74,7 @@ use std::time::Duration;
 use super::json::Value;
 use super::{create_private_dir, read_bounded_line, Helper, Shared};
 use crate::backend::{AttachmentId, BackendError, Event, ToolCallId};
+use crate::consent::policy::Refusal;
 use crate::consent::presenter::Rendered;
 use crate::consent::render::escape_inline;
 use crate::consent::request::{ClassSpec, RequestSpec};
@@ -477,12 +478,22 @@ impl Shared {
             None => true,
         };
         match invocation {
-            Some(invocation) => self.emit_if_live(Event::ApprovalResolved {
-                turn,
-                call,
-                invocation,
-                allowed: outcome.is_ok() && delivered,
-            }),
+            Some(invocation) => {
+                self.emit_if_live(Event::ApprovalResolved {
+                    turn,
+                    call,
+                    invocation,
+                    allowed: outcome.is_ok() && delivered,
+                });
+                // Announced, then found too tall once laid out: nobody saw a dialog, so
+                // the refusal alone would not say why.
+                if let Err(refusal @ Refusal::DoesNotFit) = outcome {
+                    self.diagnostic_if_live(format!(
+                        "approval request for {shown_name} ({}) refused: {refusal}",
+                        escape_inline(id.as_bytes())
+                    ));
+                }
+            }
             // Refused before a dialog: the CLI has its deny; the log has why.
             None => {
                 if let Err(refusal) = outcome {

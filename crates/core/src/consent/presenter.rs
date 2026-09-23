@@ -99,6 +99,16 @@ impl Responder {
         self.answered = true;
         let _ = self.tx.send(Outcome::Failed(error));
     }
+
+    /// Reports that the request, laid out, cannot be shown in full, so it was not shown.
+    /// The byte bound in [`ConsentPresenter::capacity`] is checked before `show`; this is
+    /// the check only the laid-out dialog can make — line breaks, wrapping, the screen it
+    /// is on. The request is refused as the byte bound refuses it, with one difference: this
+    /// comes after [`crate::consent::Consent::ask_observed`] has told its observer.
+    pub fn does_not_fit(mut self) {
+        self.answered = true;
+        let _ = self.tx.send(Outcome::DoesNotFit);
+    }
 }
 
 impl Drop for Responder {
@@ -122,6 +132,8 @@ pub(super) enum Outcome {
         opened: Instant,
     },
     Failed(PresenterError),
+    /// The presenter laid the request out and it did not fit.
+    DoesNotFit,
     /// Sent by the gate itself when it withdraws the request, so a wait on the channel ends
     /// whether or not the presenter ever answers.
     Withdrawn,
@@ -130,8 +142,11 @@ pub(super) enum Outcome {
 /// The core's view of a native modal. The shell implements it; the core never opens a
 /// window of its own.
 pub trait ConsentPresenter: Send + Sync {
-    /// The largest `body` this presenter can show in full, in bytes. A request over it is
-    /// refused before `show` is called; a hash or a summary is not a substitute.
+    /// The most bytes this presenter could show in full, as [`Rendered::shown_len`] counts
+    /// them. A request over it is refused before `show` is called; a hash or a summary is
+    /// not a substitute. A presenter whose room depends on layout — line breaks, wrapping,
+    /// the screen — makes this an upper bound and reports a request that is under it but
+    /// still does not fit through [`Responder::does_not_fit`].
     fn capacity(&self) -> usize;
 
     /// Opens the dialog and returns at once. The answer arrives through `responder`.

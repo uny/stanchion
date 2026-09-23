@@ -39,6 +39,8 @@ enum Mode {
     DropsResponder,
     /// Never answers on its own; the test answers through `answer_held`.
     Hold,
+    /// Lays the request out and finds it does not fit.
+    DoesNotFit,
 }
 
 struct FakePresenter {
@@ -102,6 +104,7 @@ impl ConsentPresenter for FakePresenter {
             Mode::Fails => responder.fail(PresenterError("unknown response".into())),
             Mode::DropsResponder => drop(responder),
             Mode::Hold => self.held.lock().unwrap().push(responder),
+            Mode::DoesNotFit => responder.does_not_fit(),
             Mode::CannotOpen => unreachable!(),
         }
         Ok(handle)
@@ -808,6 +811,30 @@ fn a_request_over_the_presenters_capacity_is_refused_before_the_presenter_is_ask
     ));
     assert!(presenter.shown().is_empty());
     assert!(gate.ask(shell_spec(run, ws.path(), "x")).is_ok());
+}
+
+#[test]
+fn a_request_the_presenter_cannot_fit_is_refused_as_not_fitting_not_as_a_failure() {
+    // Under the byte bound, but the laid-out dialog is taller than the screen: the refusal
+    // names the size, not a broken presenter.
+    let ws = Workspace::new();
+    let presenter = FakePresenter::new(Mode::DoesNotFit);
+    let gate = gate(&presenter);
+    let run = gate.register_run(Backend::Native);
+    assert_eq!(
+        gate.ask(shell_spec(run, ws.path(), "ls")).map(|_| ()),
+        Err(Refusal::DoesNotFit)
+    );
+    assert_eq!(presenter.shown().len(), 1, "it was laid out, then refused");
+
+    // Unlike the byte bound, this is found out inside `show`: the observer has been told.
+    let mut told = 0;
+    assert_eq!(
+        gate.ask_observed(shell_spec(run, ws.path(), "ls"), &mut |_| told += 1)
+            .map(|_| ()),
+        Err(Refusal::DoesNotFit)
+    );
+    assert_eq!(told, 1);
 }
 
 #[test]

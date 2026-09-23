@@ -36,10 +36,11 @@ pub fn run() {
             // environment (`assembly`). A backend that cannot be built is kept as its
             // reason, reported by `backend_status`, so the window still opens and says
             // why rather than failing to start.
+            let config = Config::default();
             let gate = Arc::new(Consent::new(
-                Arc::new(presenter::FailClosed),
+                Arc::new(presenter::NativeAlert::new(config.settle)),
                 Arc::new(AlwaysAsk),
-                Config::default(),
+                config,
             ));
             let backend = app
                 .path()

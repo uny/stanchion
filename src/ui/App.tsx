@@ -7,9 +7,11 @@ import { describe } from "./events";
  * The least UI that exercises the Claude Code backend from the shell: open a conversation
  * under an account name in a workspace, send input, watch every event the backend
  * reports, interrupt, terminate, resume. Two conversations side by side is the point
- * (#46). Nothing here answers an approval; the dialog is the shell's, and until it is
- * wired the gate refuses every delegated call for want of a presenter that can show it —
- * which arrives here as a diagnostic and an error tool result, not as an approval event.
+ * (#46). Nothing here answers an approval; the dialog is the shell's native alert, and
+ * this view only reports what happened to it: an approval event when a request is shown
+ * and when it is answered, or — for a request too long to show in full — a diagnostic and
+ * an error tool result, preceded by a refused approval event when the alert learned that
+ * only once laid out.
  */
 
 interface Conversation {
