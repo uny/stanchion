@@ -81,16 +81,19 @@ pub enum Abandon {
 }
 
 /// Maps a key pressed while an alert is up to what it abandons: Command with no other
-/// modifier and `.` or `q`. Nothing here is an answer — every other key, Return among them,
-/// goes on to the alert, which is how Return still presses Deny.
+/// modifier and `.` or `q`. Caps Lock is not a modifier here, and the `Q` it produces is
+/// `q`. Nothing here is an answer — every other key, Return among them, goes on to the
+/// alert, which is how Return still presses Deny.
 pub fn abandon_for_key(chars: &str, modifier_flags: usize) -> Option<Abandon> {
-    let held = modifier_flags & NSEventModifierFlags::DeviceIndependentFlagsMask.0;
+    let held = modifier_flags
+        & NSEventModifierFlags::DeviceIndependentFlagsMask.0
+        & !NSEventModifierFlags::CapsLock.0;
     if held != NSEventModifierFlags::Command.0 {
         return None;
     }
     match chars {
         "." => Some(Abandon::Terminate),
-        "q" => Some(Abandon::Quit),
+        "q" | "Q" => Some(Abandon::Quit),
         _ => None,
     }
 }
@@ -547,6 +550,9 @@ mod tests {
         assert_eq!(abandon_for_key(".", 0x100108), Some(Abandon::Terminate));
         assert_eq!(abandon_for_key("q", 0x100108), Some(Abandon::Quit));
         assert_eq!(abandon_for_key(".", cmd), Some(Abandon::Terminate));
+        let caps = NSEventModifierFlags::CapsLock.0;
+        assert_eq!(abandon_for_key("Q", cmd | caps), Some(Abandon::Quit));
+        assert_eq!(abandon_for_key(".", cmd | caps), Some(Abandon::Terminate));
         // Another modifier with Command, or none at all: not ours.
         let shift = NSEventModifierFlags::Shift.0;
         let option = NSEventModifierFlags::Option.0;
@@ -555,7 +561,7 @@ mod tests {
         assert_eq!(abandon_for_key(".", 0x100), None);
         assert_eq!(abandon_for_key("q", 0), None);
         // Return, Escape, space and the rest go on to the alert.
-        for chars in ["\r", "\u{1b}", " ", "a", "Q", ""] {
+        for chars in ["\r", "\u{1b}", " ", "a", "A", ""] {
             assert_eq!(abandon_for_key(chars, cmd), None, "{chars:?}");
             assert_eq!(abandon_for_key(chars, 0), None, "{chars:?}");
         }
