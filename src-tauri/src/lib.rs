@@ -59,6 +59,14 @@ pub fn run() {
             conversations::terminate_conversation,
             conversations::resume_conversation,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running stanchion");
+        .build(tauri::generate_context!())
+        .expect("error while building stanchion")
+        .run(|app, event| {
+            // Before the process exits, not on drop: nothing drops the managed state on
+            // the way out. A quit while an alert is up does not get here — the alert is
+            // app-modal and holds the quit until it is answered.
+            if let tauri::RunEvent::Exit = event {
+                app.state::<Arc<conversations::Conversations>>().shut_down();
+            }
+        });
 }

@@ -19,10 +19,16 @@
 //! is resumed, and one resume at a time per conversation, so the events of two
 //! attachments never interleave on one channel. Sessions are held for the process's
 //! life only; a store that survives it is later work (#46).
+//!
+//! Quit: [`Conversations::shut_down`] runs as the application exits and terminates every
+//! open conversation, which ends the tools each CLI started as well as the CLI (the
+//! core's `terminate`). Measured before it existed: an approved command ran to its end
+//! after the application had quit. Once it has begun, a start or a resume still in
+//! flight terminates what it spawned instead of registering it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use stanchion_core::backend::claude_code::ClaudeCode;
@@ -43,6 +49,8 @@ pub struct Conversations {
     gate: Arc<Consent>,
     next: AtomicU64,
     open: Mutex<HashMap<u64, Open>>,
+    /// Set under the `open` lock by `shut_down`; read under it by whatever registers.
+    shutting_down: AtomicBool,
 }
 
 struct Open {
@@ -61,6 +69,7 @@ impl Conversations {
             gate,
             next: AtomicU64::new(1),
             open: Mutex::new(HashMap::new()),
+            shutting_down: AtomicBool::new(false),
         }
     }
 
@@ -72,6 +81,35 @@ impl Conversations {
 
     fn open(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Open>> {
         self.open.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Terminates every open conversation, and every one a start or resume registers from
+    /// now on. Returns once each terminate has sent its signals; it does not wait for
+    /// `Exited`, which the event loop that is ending would deliver.
+    pub fn shut_down(&self) {
+        let sessions: Vec<Arc<dyn Session>> = {
+            let open = self.open();
+            self.shutting_down.store(true, Ordering::SeqCst);
+            open.values().map(|o| o.session.clone()).collect()
+        };
+        for session in sessions {
+            let _ = session.terminate();
+        }
+    }
+
+    /// Refused once `shut_down` has begun: the session just spawned is terminated rather
+    /// than left running past the application's exit. Takes the `open` map to show the
+    /// caller holds its lock, which is what orders this check against `shut_down`.
+    fn refuse_if_shutting_down(
+        &self,
+        _open: &HashMap<u64, Open>,
+        session: &dyn Session,
+    ) -> Result<(), CommandError> {
+        if self.shutting_down.load(Ordering::SeqCst) {
+            let _ = session.terminate();
+            return Err("stanchion is quitting".into());
+        }
+        Ok(())
     }
 
     fn session(&self, conversation: u64) -> Result<Arc<dyn Session>, CommandError> {
@@ -115,7 +153,9 @@ pub async fn start_conversation(
                 events: sink.clone(),
             })
             .map_err(|e| e.to_string())?;
-        state.open().insert(
+        let mut open = state.open();
+        state.refuse_if_shutting_down(&open, session.as_ref())?;
+        open.insert(
             conversation,
             Open {
                 session: Arc::from(session),
@@ -214,7 +254,9 @@ pub async fn resume_conversation(
                 events: sink.clone(),
             })
             .map_err(|e| e.to_string())?;
-        if let Some(open) = state.open().get_mut(&conversation) {
+        let mut open = state.open();
+        state.refuse_if_shutting_down(&open, session.as_ref())?;
+        if let Some(open) = open.get_mut(&conversation) {
             open.session = Arc::from(session);
             open.sink = sink;
         }

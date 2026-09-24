@@ -150,8 +150,9 @@ any wait for the presentation slot — `ApprovalResolved` when the reply is sent
 `permission_denials` — one the CLI's own rules allowed — is reported as
 `RanWithoutAsking` on a turn that ran to its end. The CLI fails closed on a helper it
 cannot reach or a reply it cannot read (measured; `crates/core/src/backend/claude_code/approval.rs`). `after_interrupt` is
-`Unmeasured` — `interrupt` sends the stream-json control request rather than the SIGINT
-#42 measured — until the resume slice measures it. CI drives the backend through
+`AsksBeforeContinuing` — `interrupt` sends the stream-json control request rather than the
+SIGINT #42 measured, and on 2.1.280 the model waited to be told after a resume (#46). CI
+drives the backend through
 `crates/core/tests/fixtures/fake-claude.sh`, a shell script that emits the measured
 shapes; the real binary is never run in CI.
 

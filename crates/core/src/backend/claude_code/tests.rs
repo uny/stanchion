@@ -1828,3 +1828,137 @@ fn wait_until(pred: impl Fn() -> bool) {
         thread::sleep(Duration::from_millis(10));
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// `terminate` ends the tools the CLI started, not only the CLI (`tree`). The fake's
+// "tools" turn starts two, as the real CLI's Bash call is started: one in a session of its
+// own, one left in the CLI's group. Each marks that it started and, three seconds later,
+// that it ran to its end. Only macOS walks the tree (`tree::kill`), so the tests that
+// terminate run there only.
+
+/// How long a tool of the "tools" turn takes to reach its end, with room to spare.
+#[cfg(target_os = "macos")]
+const TOOL_RUNS: Duration = Duration::from_secs(5);
+
+fn tools_backend(dirs: &Dirs, prefix: &Path) -> ClaudeCode {
+    backend(dirs).env("FAKE_CLAUDE_TOOLS", prefix.to_str().unwrap())
+}
+
+fn marker(prefix: &Path, name: &str) -> PathBuf {
+    PathBuf::from(format!("{}.{name}", prefix.display()))
+}
+
+fn wait_for_file(path: &Path) {
+    let deadline = Instant::now() + WAIT;
+    while !path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "no {} within {WAIT:?}",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Sends the "tools" turn and returns once both tools have started, so a terminate that
+/// follows cannot pass by having come first.
+fn tools_running(session: &dyn Session, prefix: &Path) {
+    session
+        .send(UserInput {
+            text: "tools".into(),
+        })
+        .unwrap();
+    wait_for_file(&marker(prefix, "session.started"));
+    wait_for_file(&marker(prefix, "group.started"));
+}
+
+#[test]
+fn left_alone_the_tools_run_to_their_end() {
+    // The control: without it, the test below passes on a fake whose tools never finish.
+    let dirs = Dirs::new("tools-control");
+    let prefix = dirs.base.join("t");
+    let events = Arc::new(Recorder::default());
+    let session = start(&tools_backend(&dirs, &prefix), &dirs, &events);
+    tools_running(session.as_ref(), &prefix);
+    wait_for_file(&marker(&prefix, "session"));
+    wait_for_file(&marker(&prefix, "group"));
+    session.terminate().unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn terminate_kills_the_tools_the_cli_started() {
+    let dirs = Dirs::new("tools");
+    let prefix = dirs.base.join("t");
+    let events = Arc::new(Recorder::default());
+    let session = start(&tools_backend(&dirs, &prefix), &dirs, &events);
+    tools_running(session.as_ref(), &prefix);
+    session.terminate().unwrap();
+    let got = events.wait_for("Exited", is_exited);
+    assert_eq!(exited(&got).unwrap().0, &Exit::Terminated);
+    thread::sleep(TOOL_RUNS);
+    assert!(
+        !marker(&prefix, "session").exists(),
+        "a tool in a session of its own ran on"
+    );
+    assert!(
+        !marker(&prefix, "group").exists(),
+        "a tool in the CLI's group ran on"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_second_terminate_returns_once_the_first_has_killed() {
+    let dirs = Dirs::new("tools-twice");
+    let prefix = dirs.base.join("t");
+    let events = Arc::new(Recorder::default());
+    let session: Arc<dyn Session> =
+        Arc::from(start(&tools_backend(&dirs, &prefix), &dirs, &events));
+    tools_running(session.as_ref(), &prefix);
+    let both: Vec<_> = (0..2)
+        .map(|_| {
+            let session = session.clone();
+            thread::spawn(move || session.terminate())
+        })
+        .collect();
+    for t in both {
+        t.join().unwrap().unwrap();
+    }
+    events.wait_for("Exited", is_exited);
+    thread::sleep(TOOL_RUNS);
+    assert!(!marker(&prefix, "session").exists());
+    assert!(!marker(&prefix, "group").exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn terminating_one_account_leaves_the_other_accounts_tools() {
+    let dirs = Dirs::new("tools-two");
+    let tools = dirs.base.join("tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    let backend = tools_backend(&dirs, &tools);
+    let gate = gate();
+    let run = |n: u64, account: &str| {
+        let events = Arc::new(Recorder::default());
+        let session = start_as(
+            &backend,
+            &dirs,
+            &events,
+            gate.clone(),
+            ConversationId(n),
+            AccountId(account.into()),
+        );
+        let prefix = tools.join(dir_name(account));
+        tools_running(session.as_ref(), &prefix);
+        (session, prefix)
+    };
+    let (alice, alice_tools) = run(1, ALICE);
+    let (bob, bob_tools) = run(2, BOB);
+    alice.terminate().unwrap();
+    wait_for_file(&marker(&bob_tools, "session"));
+    wait_for_file(&marker(&bob_tools, "group"));
+    assert!(!marker(&alice_tools, "session").exists());
+    assert!(!marker(&alice_tools, "group").exists());
+    bob.terminate().unwrap();
+}
