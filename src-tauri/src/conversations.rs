@@ -112,6 +112,20 @@ impl Conversations {
         Ok(())
     }
 
+    /// Terminates the conversation whose attachment is waiting on `invocation`: Cmd-. on
+    /// the alert showing it. An invocation no open conversation is waiting on — one already
+    /// resolved, or asked by something else — terminates nothing.
+    pub fn terminate_waiting_on(&self, invocation: u64) {
+        let session = self
+            .open()
+            .values()
+            .find(|o| o.sink.is_pending(invocation))
+            .map(|o| o.session.clone());
+        if let Some(session) = session {
+            let _ = session.terminate();
+        }
+    }
+
     fn session(&self, conversation: u64) -> Result<Arc<dyn Session>, CommandError> {
         self.open()
             .get(&conversation)

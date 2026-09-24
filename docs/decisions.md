@@ -641,6 +641,17 @@ something unexpected — nothing executes, and on a CLI backend the deny reply s
   and clicking *Allow* landed inside the interval. An *Allow* inside it, or before the
   alert was ever key, is therefore not an answer — the same alert is run again — rather
   than a refusal of the request; the gate's own settle check stays behind it.
+- *Keys while it is up (#62).* The modal holds the window and the menu, so a local key
+  monitor, installed for as long as the alert runs its modal, takes Cmd-. and Cmd-Q
+  (Command with no other modifier) to the shell rather than to the alert: Cmd-. ends the
+  conversation whose request is on screen, Cmd-Q ends every conversation and then quits.
+  Either way the run ends and the gate withdraws the request, which aborts the modal; no
+  key answers, every other key goes on to the alert, and Return still presses Deny.
+  Measured: the monitor sees key events during `runModal`, and in the application Cmd-.
+  ended that conversation alone and Cmd-Q quit with no CLI left, the command running in
+  neither. The CLI is killed before a deny could reach it, so what these keys guarantee
+  is that nothing runs, not that the CLI hears *deny*. The WebView's buttons stay
+  unreachable while an alert is up.
 
 **Scope, stated so it is not overread.** This decides *who approved*, for requests that reach
 the core. It is a guarantee about the IPC boundary: consent cannot be forged by script in the
@@ -850,8 +861,8 @@ that nothing runs on: a descendant that daemonised, and every descendant of a CL
 ended without `terminate`, are outside the tree by the time anyone looks, and what a
 command already did stays done. *The alert is app-modal:* while it is up, Interrupt,
 Terminate and Quit do nothing, and the way out is to answer it — Deny is the stop. That is
-the state the window returns to usability from, and making a pending dialog itself
-interruptible is a follow-up, not part of this slice. Also seen: the CLI allows a
+the state the window returns to usability from; Cmd-. and Cmd-Q were added afterwards
+(#62) as a way to stop without answering. Also seen: the CLI allows a
 background `sleep 60 && date` on its own (reported as `RanWithoutAsking`), and it starts a
 turn of its own when a background task finishes, which the backend reports only as
 diagnostics outside a turn.

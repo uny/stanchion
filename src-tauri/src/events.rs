@@ -9,6 +9,7 @@
 //! is exempt from the ACL unconditionally (`docs/decisions.md`). And nothing here can
 //! carry an answer back: the channel is one way, from the core to the WebView.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -322,12 +323,14 @@ pub struct ConversationEvent {
 /// here, on the sink itself, so there is no window in which they can be missed: the
 /// `SessionOpened` a resume needs — which on a fresh start may arrive before the shell
 /// has stored the session at all (`init` before the first input is a measured shape) —
-/// and the `Exited` that says this attachment is over.
+/// and the `Exited` that says this attachment is over. The invocations requested and not
+/// yet resolved are kept too, so Cmd-. on an alert can find the conversation it belongs to.
 pub struct ChannelSink {
     conversation: ConversationId,
     channel: Channel<ConversationEvent>,
     session: Mutex<Option<SessionId>>,
     exited: AtomicBool,
+    pending: Mutex<HashSet<u64>>,
 }
 
 impl ChannelSink {
@@ -337,6 +340,7 @@ impl ChannelSink {
             channel,
             session: Mutex::new(None),
             exited: AtomicBool::new(false),
+            pending: Mutex::new(HashSet::new()),
         })
     }
 
@@ -352,6 +356,14 @@ impl ChannelSink {
             .clone()
     }
 
+    /// Whether this attachment asked the gate about `invocation` and has not heard back.
+    pub fn is_pending(&self, invocation: u64) -> bool {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&invocation)
+    }
+
     /// Whether this attachment reported its end. Nothing follows `Exited` on a sink.
     pub fn exited(&self) -> bool {
         self.exited.load(Ordering::SeqCst)
@@ -363,6 +375,18 @@ impl EventSink for ChannelSink {
         match &event {
             Event::SessionOpened { session } => {
                 *self.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session.clone());
+            }
+            Event::ApprovalRequested { invocation, .. } => {
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(invocation.raw());
+            }
+            Event::ApprovalResolved { invocation, .. } => {
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&invocation.raw());
             }
             Event::Exited { .. } => self.exited.store(true, Ordering::SeqCst),
             _ => {}
