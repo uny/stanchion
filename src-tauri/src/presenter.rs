@@ -351,18 +351,16 @@ fn run_alert(
 
     // Return must press the negative and nothing may press the affirmative from the
     // keyboard. `NSAlert` assigns both from the order and the captions; check what it did
-    // rather than trust it — here, and again after a rerun changes the text.
-    let unexpected_keys = |alert: &NSAlert| {
-        let keys: Vec<String> = alert
-            .buttons()
-            .iter()
-            .map(|b| b.keyEquivalent().to_string())
-            .collect();
-        (keys != ["\r", ""])
-            .then(|| PresenterError(format!("unexpected key equivalents: {keys:?}")))
-    };
-    if let Some(e) = unexpected_keys(&alert) {
-        responder.fail(e);
+    // rather than trust it.
+    let keys: Vec<String> = alert
+        .buttons()
+        .iter()
+        .map(|b| b.keyEquivalent().to_string())
+        .collect();
+    if keys != ["\r", ""] {
+        responder.fail(PresenterError(format!(
+            "unexpected key equivalents: {keys:?}"
+        )));
         return;
     }
 

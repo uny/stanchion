@@ -651,9 +651,10 @@ something unexpected — nothing executes, and on a CLI backend the deny reply s
   rerun cannot overflow; one extra layout. Measured with the probe's `early-click`: the
   notice appears on the rerun (218 to 266 points); an *Allow* at 760 ms — some 650 ms after
   the alert first became key, 300 ms after the rerun did — is ignored too, so the rerun
-  starts the settle interval again; one a second later answers. `runModal` assigns the key equivalents as it starts and clears
-  both as it ends: during every run, the rerun included, Return is Deny and *Allow* has
-  none, and between runs both read empty — so they are checked once, before the first run.
+  starts the settle interval again; one a second later answers. `runModal` assigns the key
+  equivalents as it starts and clears both as it ends: during every run, the rerun
+  included, Return is Deny and *Allow* has none, and between runs both read empty — so
+  they are checked once, before the first run.
 - *Keys while it is up (#62).* The modal holds the window and the menu, so a local key
   monitor, installed for as long as the alert runs its modal, takes Cmd-. and Cmd-Q
   (Command with no other modifier) to the shell rather than to the alert: Cmd-. ends the
