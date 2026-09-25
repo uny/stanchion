@@ -15,14 +15,17 @@
 //! Quit menu item cannot be reached. Two keys can: Cmd-. and Cmd-Q, caught by a local key
 //! monitor that lives only as long as the alert's modal, are handed to the shell's
 //! [`OnAbandon`] hook rather than answered. The shell ends the conversation, or all of
-//! them, and the gate withdraws the request as it does for any ended run. No key answers.
+//! them, and the gate withdraws the request as it does for any ended run. No key answers,
+//! and once one has been handed over, neither does *Allow* on that alert.
 //!
 //! What must never appear here: an application command that takes an approval decision,
 //! or a `dialog:` permission in `capabilities/default.json`. `tests` checks both.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
 use std::ptr::NonNull;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -396,23 +399,30 @@ fn run_alert(
         }
         s.live = Some(id);
     }
-    // Cmd-. and Cmd-Q, for as long as the modal runs. A key the hook takes is not passed on.
+    // Cmd-. and Cmd-Q, for as long as the modal runs. A key the hook takes is not passed on,
+    // and from then on an *Allow* is not an answer: the gate hears of the abandon only once
+    // the run's end is observed, and a click in between must not mint.
     let invocation = rendered.invocation;
-    let keys = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-        // SAFETY: AppKit hands the monitor a live event for the length of the call.
-        let e = unsafe { event.as_ref() };
-        let chars = e
-            .charactersIgnoringModifiers()
-            .map(|c| c.to_string())
-            .unwrap_or_default();
-        match (abandon_for_key(&chars, e.modifierFlags().0), &on_abandon) {
-            (Some(what), Some(hook)) => {
-                hook(what, invocation);
-                std::ptr::null_mut()
+    let abandoned = Rc::new(Cell::new(false));
+    let keys = {
+        let abandoned = Rc::clone(&abandoned);
+        RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit hands the monitor a live event for the length of the call.
+            let e = unsafe { event.as_ref() };
+            let chars = e
+                .charactersIgnoringModifiers()
+                .map(|c| c.to_string())
+                .unwrap_or_default();
+            match (abandon_for_key(&chars, e.modifierFlags().0), &on_abandon) {
+                (Some(what), Some(hook)) => {
+                    abandoned.set(true);
+                    hook(what, invocation);
+                    std::ptr::null_mut()
+                }
+                _ => event.as_ptr(),
             }
-            _ => event.as_ptr(),
-        }
-    });
+        })
+    };
     // SAFETY: the block returns the event it was given or null, as the monitor requires;
     // the monitor is removed below, before the block is dropped.
     let monitor = unsafe {
@@ -428,7 +438,7 @@ fn run_alert(
         let response = alert.runModal();
         let key_at = key.lock().map(|k| *k).unwrap_or(None);
         if slot_for_response(response).and_then(answer_for_slot) == Some(Answer::Allow)
-            && !settled(key_at, Instant::now(), settle)
+            && (abandoned.get() || !settled(key_at, Instant::now(), settle))
         {
             continue;
         }
