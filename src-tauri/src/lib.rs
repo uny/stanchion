@@ -37,17 +37,35 @@ pub fn run() {
             // reason, reported by `backend_status`, so the window still opens and says
             // why rather than failing to start.
             let config = Config::default();
-            let gate = Arc::new(Consent::new(
-                Arc::new(presenter::NativeAlert::new(config.settle)),
-                Arc::new(AlwaysAsk),
-                config,
-            ));
+            let alert = Arc::new(presenter::NativeAlert::new(config.settle));
+            let gate = Arc::new(Consent::new(alert.clone(), Arc::new(AlwaysAsk), config));
             let backend = app
                 .path()
                 .app_data_dir()
                 .map_err(|e| format!("application data directory: {e}"))
                 .and_then(|dir| assembly::backend(&dir));
-            app.manage(Arc::new(conversations::Conversations::new(backend, gate)));
+            let conversations = Arc::new(conversations::Conversations::new(backend, gate));
+            app.manage(conversations.clone());
+            // Cmd-. and Cmd-Q while an alert is up. The hook runs inside the modal on the
+            // main thread, so the work goes to a thread of its own: terminating walks the
+            // CLI's process tree. Either way the run ends, the gate withdraws the request,
+            // and the withdrawal aborts the modal; the quit is asked for once every
+            // conversation has been told to end, and `RunEvent::Exit` below repeats that
+            // for any that registered meanwhile.
+            let handle = app.handle().clone();
+            alert.on_abandon(Arc::new(move |what, invocation| {
+                let conversations = conversations.clone();
+                let handle = handle.clone();
+                std::thread::spawn(move || match what {
+                    presenter::Abandon::Terminate => {
+                        conversations.terminate_waiting_on(invocation.raw())
+                    }
+                    presenter::Abandon::Quit => {
+                        conversations.shut_down();
+                        handle.exit(0);
+                    }
+                });
+            }));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -63,8 +81,9 @@ pub fn run() {
         .expect("error while building stanchion")
         .run(|app, event| {
             // Before the process exits, not on drop: nothing drops the managed state on
-            // the way out. A quit while an alert is up does not get here — the alert is
-            // app-modal and holds the quit until it is answered.
+            // the way out. The Quit menu item cannot be reached while an alert is up —
+            // the alert is app-modal — so a quit then comes from Cmd-Q, through the hook
+            // above.
             if let tauri::RunEvent::Exit = event {
                 app.state::<Arc<conversations::Conversations>>().shut_down();
             }

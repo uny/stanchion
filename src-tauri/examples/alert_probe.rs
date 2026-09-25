@@ -3,7 +3,7 @@
 //!
 //!     cargo run -p stanchion --example alert_probe -- <scenario>
 //!
-//! Scenarios: `withdraw`, `early`, `queued`, `fit`, `early-click`, `human`.
+//! Scenarios: `withdraw`, `early`, `queued`, `fit`, `early-click`, `human`, `keys`.
 
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -87,11 +87,16 @@ fn main() {
         .setup(move |app| {
             let t0 = Instant::now();
             let config = Config::default();
-            let gate = Arc::new(Consent::new(
-                Arc::new(NativeAlert::new(config.settle)),
-                Arc::new(AlwaysAsk),
-                config,
-            ));
+            let alert = Arc::new(NativeAlert::new(config.settle));
+            let gate = Arc::new(Consent::new(alert.clone(), Arc::new(AlwaysAsk), config));
+            {
+                let gate = Arc::clone(&gate);
+                alert.on_abandon(Arc::new(move |what, invocation| {
+                    eprintln!("[{:>5}ms] abandon {what:?}", t0.elapsed().as_millis());
+                    let gate = Arc::clone(&gate);
+                    std::thread::spawn(move || gate.cancel(invocation));
+                }));
+            }
             let run = gate.register_run(Backend::Native);
             // A tick the Tauri event loop delivers: does it arrive while an alert is up?
             let handle = app.handle().clone();
@@ -176,6 +181,20 @@ fn main() {
                                 at(4000);
                             }
                             let (_, j) = ask(&gate, run, format!("echo '{step}'"), t0, "result");
+                            j.join().unwrap();
+                        }
+                    }
+                    "keys" => {
+                        // Cmd-. and Cmd-Q reach the hook while the alert runs its modal;
+                        // the hook withdraws the request, as the shell's does by ending
+                        // the run, and the withdrawal aborts the modal.
+                        eprintln!(
+                            "[{:>5}ms] press Cmd-. on the first alert, Cmd-Q on the \
+                             second; Return on the third",
+                            t0.elapsed().as_millis()
+                        );
+                        for name in ["cmd-dot", "cmd-q", "return"] {
+                            let (_, j) = ask(&gate, run, format!("echo {name}"), t0, name);
                             j.join().unwrap();
                         }
                     }

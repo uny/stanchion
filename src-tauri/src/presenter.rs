@@ -11,26 +11,39 @@
 //! measured").
 //! [`FailClosed`] stays as the presenter that shows nothing.
 //!
+//! While an alert is up the application is modal, so the window's Terminate button and the
+//! Quit menu item cannot be reached. Two keys can: Cmd-. and Cmd-Q, caught by a local key
+//! monitor that lives only as long as the alert's modal, are handed to the shell's
+//! [`OnAbandon`] hook rather than answered. The shell ends the conversation, or all of
+//! them, and the gate withdraws the request as it does for any ended run. No key answers,
+//! and once one has been handed over, neither does *Allow* on that alert.
+//!
 //! What must never appear here: an application command that takes an approval decision,
 //! or a `dialog:` permission in `capabilities/default.json`. `tests` checks both.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
 use std::ptr::NonNull;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSApplication, NSModalResponse,
-    NSRequestUserAttentionType, NSScreen, NSWindowDidBecomeKeyNotification,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSApplication, NSEvent,
+    NSEventMask, NSEventModifierFlags, NSModalResponse, NSRequestUserAttentionType, NSScreen,
+    NSWindowDidBecomeKeyNotification,
 };
 use objc2_core_foundation::{kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFRunLoop};
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSString};
 use stanchion_core::consent::presenter::{
     Answer, ConsentPresenter, Handle, PresenterError, Rendered, Responder,
 };
+use stanchion_core::consent::request::InvocationId;
 use stanchion_core::consent::{AFFIRMATIVE, NEGATIVE};
 
 /// The captions in the order a native alert receives them. `NSAlert` makes the first button
@@ -62,6 +75,38 @@ pub fn slot_for_response(response: NSModalResponse) -> Option<usize> {
         None
     }
 }
+
+/// What a key pressed while an alert is up asks for instead of an answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Abandon {
+    /// Cmd-.: end the conversation whose request the alert shows.
+    Terminate,
+    /// Cmd-Q: quit the application.
+    Quit,
+}
+
+/// Maps a key pressed while an alert is up to what it abandons: Command with no other
+/// modifier and `.` or `q`. Caps Lock is not a modifier here, and the `Q` it produces is
+/// `q`. Nothing here is an answer — every other key, Return among them, goes on to the
+/// alert, which is how Return still presses Deny.
+pub fn abandon_for_key(chars: &str, modifier_flags: usize) -> Option<Abandon> {
+    let held = modifier_flags
+        & NSEventModifierFlags::DeviceIndependentFlagsMask.0
+        & !NSEventModifierFlags::CapsLock.0;
+    if held != NSEventModifierFlags::Command.0 {
+        return None;
+    }
+    match chars {
+        "." => Some(Abandon::Terminate),
+        "q" | "Q" => Some(Abandon::Quit),
+        _ => None,
+    }
+}
+
+/// The shell's hook for [`Abandon`]: told what was asked and the invocation on screen. It
+/// is called on the main thread, inside the modal, so it must hand the work off and return;
+/// what it starts reaches the alert as a withdrawal, which aborts the modal.
+pub type OnAbandon = Arc<dyn Fn(Abandon, InvocationId) + Send + Sync>;
 
 /// The largest request [`NativeAlert`] lays out at all. It is a bound on work, not a promise
 /// that anything under it fits: whether a request fits is decided on the laid-out alert,
@@ -98,6 +143,7 @@ const LINE_HEIGHT: f64 = 16.0;
 pub struct NativeAlert {
     state: Arc<Mutex<State>>,
     settle: Duration,
+    on_abandon: Arc<OnceLock<OnAbandon>>,
 }
 
 #[derive(Default)]
@@ -121,7 +167,14 @@ impl NativeAlert {
         NativeAlert {
             state: Arc::new(Mutex::new(State::default())),
             settle,
+            on_abandon: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// Sets the hook Cmd-. and Cmd-Q go to. Set once, after the gate is built — the shell
+    /// that acts on it is built around the gate. Until it is set the two keys do nothing.
+    pub fn on_abandon(&self, hook: OnAbandon) {
+        let _ = self.on_abandon.set(hook);
     }
 }
 
@@ -168,6 +221,7 @@ impl ConsentPresenter for NativeAlert {
         };
         let state = Arc::clone(&self.state);
         let settle = self.settle;
+        let on_abandon = self.on_abandon.get().cloned();
         let rendered = rendered.clone();
         // The block type is `Fn`; it runs once, so the responder is taken out of a cell.
         let responder = Mutex::new(Some(responder));
@@ -190,7 +244,15 @@ impl ConsentPresenter for NativeAlert {
             // An unwind out of a CoreFoundation callout is not recoverable; a panic here
             // drops the responder, which the gate reads as presenter failure.
             let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                run_alert(mtm, &state, id, settle, &rendered, responder)
+                run_alert(
+                    mtm,
+                    &state,
+                    id,
+                    settle,
+                    &rendered,
+                    on_abandon.clone(),
+                    responder,
+                )
             }));
             finish(&state, id);
         });
@@ -228,6 +290,17 @@ fn finish(state: &Mutex<State>, id: u64) {
     s.cancelled.remove(&id);
 }
 
+/// A local event monitor, removed when dropped — on an unwind out of the modal too, so a
+/// stale one is never left taking Cmd-. from every later alert.
+struct Monitor(Retained<AnyObject>);
+
+impl Drop for Monitor {
+    fn drop(&mut self) {
+        // SAFETY: the monitor was returned by `addLocalMonitorForEventsMatchingMask:`.
+        unsafe { NSEvent::removeMonitor(&self.0) };
+    }
+}
+
 /// Builds, checks, lays out and runs one alert, and answers for it. Main thread only.
 fn run_alert(
     mtm: MainThreadMarker,
@@ -235,6 +308,7 @@ fn run_alert(
     id: u64,
     settle: Duration,
     rendered: &Rendered,
+    on_abandon: Option<OnAbandon>,
     responder: Responder,
 ) {
     let alert = NSAlert::new(mtm);
@@ -338,6 +412,36 @@ fn run_alert(
         }
         s.live = Some(id);
     }
+    // Cmd-. and Cmd-Q, for as long as the modal runs. A key the hook takes is not passed on,
+    // and from then on an *Allow* is not an answer: the gate hears of the abandon only once
+    // the run's end is observed, and a click in between must not mint.
+    let invocation = rendered.invocation;
+    let abandoned = Rc::new(Cell::new(false));
+    let keys = {
+        let abandoned = Rc::clone(&abandoned);
+        RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit hands the monitor a live event for the length of the call.
+            let e = unsafe { event.as_ref() };
+            let chars = e
+                .charactersIgnoringModifiers()
+                .map(|c| c.to_string())
+                .unwrap_or_default();
+            match (abandon_for_key(&chars, e.modifierFlags().0), &on_abandon) {
+                (Some(what), Some(hook)) => {
+                    abandoned.set(true);
+                    hook(what, invocation);
+                    std::ptr::null_mut()
+                }
+                _ => event.as_ptr(),
+            }
+        })
+    };
+    // SAFETY: the block returns the event it was given or null, as the monitor requires.
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &keys)
+    }
+    .map(Monitor);
+
     let app = NSApplication::sharedApplication(mtm);
     // A critical request bounces until the application is activated or it is cancelled, so
     // an alert withdrawn while the application stays behind must cancel its own.
@@ -347,13 +451,14 @@ fn run_alert(
         let response = alert.runModal();
         let key_at = key.lock().map(|k| *k).unwrap_or(None);
         if slot_for_response(response).and_then(answer_for_slot) == Some(Answer::Allow)
-            && !settled(key_at, Instant::now(), settle)
+            && (abandoned.get() || !settled(key_at, Instant::now(), settle))
         {
             continue;
         }
         break response;
     };
     lock(state).live = None;
+    drop(monitor);
     if let Some(request) = attention {
         app.cancelUserAttentionRequest(request);
     }
@@ -456,6 +561,30 @@ mod tests {
         assert_eq!(answer_for_slot(1), Some(Answer::Allow));
         assert_eq!(answer_for_slot(2), None);
         assert_eq!(answer_for_slot(usize::MAX), None);
+    }
+
+    #[test]
+    fn only_command_dot_and_command_q_abandon_and_no_key_answers() {
+        let cmd = NSEventModifierFlags::Command.0;
+        // As measured: device-dependent bits ride along with the Command flag.
+        assert_eq!(abandon_for_key(".", 0x100108), Some(Abandon::Terminate));
+        assert_eq!(abandon_for_key("q", 0x100108), Some(Abandon::Quit));
+        assert_eq!(abandon_for_key(".", cmd), Some(Abandon::Terminate));
+        let caps = NSEventModifierFlags::CapsLock.0;
+        assert_eq!(abandon_for_key("Q", cmd | caps), Some(Abandon::Quit));
+        assert_eq!(abandon_for_key(".", cmd | caps), Some(Abandon::Terminate));
+        // Another modifier with Command, or none at all: not ours.
+        let shift = NSEventModifierFlags::Shift.0;
+        let option = NSEventModifierFlags::Option.0;
+        assert_eq!(abandon_for_key("q", cmd | shift), None);
+        assert_eq!(abandon_for_key(".", cmd | option), None);
+        assert_eq!(abandon_for_key(".", 0x100), None);
+        assert_eq!(abandon_for_key("q", 0), None);
+        // Return, Escape, space and the rest go on to the alert.
+        for chars in ["\r", "\u{1b}", " ", "a", "A", ""] {
+            assert_eq!(abandon_for_key(chars, cmd), None, "{chars:?}");
+            assert_eq!(abandon_for_key(chars, 0), None, "{chars:?}");
+        }
     }
 
     #[test]
