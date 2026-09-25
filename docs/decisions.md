@@ -641,6 +641,20 @@ something unexpected — nothing executes, and on a CLI backend the deny reply s
   and clicking *Allow* landed inside the interval. An *Allow* inside it, or before the
   alert was ever key, is therefore not an answer — the same alert is run again — rather
   than a refusal of the request; the gate's own settle check stays behind it.
+- *The rerun says so (#65).* Run again unchanged, the alert read as a second request, and
+  every approval was allowed "twice". From the first ignored *Allow* until the answer, the
+  message text opens with a notice that the click came before the alert was ready and the
+  request is the same one; the body and the buttons do not change. The notice is above the
+  title and holds an em dash, which no escaped field can contain, so no field of a request
+  can show the same line — a lookalike with a plain hyphen can still appear in the body.
+  Whether the alert fits is measured laid out both with and without the notice, so the
+  rerun cannot overflow; one extra layout. Measured with the probe's `early-click`: the
+  notice appears on the rerun (218 to 266 points); an *Allow* at 760 ms — some 650 ms after
+  the alert first became key, 300 ms after the rerun did — is ignored too, so the rerun
+  starts the settle interval again; one a second later answers. `runModal` assigns the key
+  equivalents as it starts and clears both as it ends: during every run, the rerun
+  included, Return is Deny and *Allow* has none, and between runs both read empty — so
+  they are checked once, before the first run.
 - *Keys while it is up (#62).* The modal holds the window and the menu, so a local key
   monitor, installed for as long as the alert runs its modal, takes Cmd-. and Cmd-Q
   (Command with no other modifier) to the shell rather than to the alert: Cmd-. ends the
@@ -649,7 +663,8 @@ something unexpected — nothing executes, and on a CLI backend the deny reply s
   key answers, every other key goes on to the alert, and Return still presses Deny. The
   gate hears of it only once the run's end is observed, so until then the alert stays up,
   and an *Allow* clicked on it after either key is not an answer: the alert is run again
-  (read from the code, not measured — the probe clicks nothing after a key).
+  (read from the code, not measured — the probe clicks nothing after a key), with no rerun
+  notice added, since the reason is the ending run and not the click's timing.
   Measured: the monitor sees key events during `runModal`, and in the application Cmd-.
   ended that conversation alone and Cmd-Q quit with no CLI left, the command running in
   neither. The CLI is killed before a deny could reach it, so what these keys guarantee

@@ -72,6 +72,57 @@ fn click_allow() {
     });
 }
 
+/// Reports the modal alert's height and the first line of its message text, if one is up.
+fn describe(t0: Instant) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSButton, NSControl, NSView};
+    fn texts(view: &NSView, out: &mut Vec<String>) {
+        // The alert's text fields; the feature set here has `NSControl`, not `NSTextField`.
+        if view.downcast_ref::<NSButton>().is_none() {
+            if let Some(field) = view.downcast_ref::<NSControl>() {
+                out.push(field.stringValue().to_string());
+            }
+        }
+        for v in view.subviews().iter() {
+            texts(&v, out);
+        }
+    }
+    dispatch_main(move || {
+        let mtm = MainThreadMarker::new().unwrap();
+        let Some(window) = NSApplication::sharedApplication(mtm).modalWindow() else {
+            eprintln!("[{:>5}ms] no modal alert", t0.elapsed().as_millis());
+            return;
+        };
+        let mut out = Vec::new();
+        let mut keys = Vec::new();
+        fn buttons(view: &NSView, keys: &mut Vec<String>) {
+            if let Some(b) = view.downcast_ref::<NSButton>() {
+                keys.push(format!("{}={:?}", b.title(), b.keyEquivalent().to_string()));
+            }
+            for v in view.subviews().iter() {
+                buttons(&v, keys);
+            }
+        }
+        if let Some(view) = window.contentView() {
+            buttons(&view, &mut keys);
+
+            texts(&view, &mut out);
+        }
+        // The icon is a control too; its string value is the image's description.
+        let first = out
+            .iter()
+            .find(|t| !t.is_empty() && !t.starts_with('<'))
+            .and_then(|t| t.lines().next())
+            .unwrap_or_default()
+            .to_string();
+        eprintln!(
+            "[{:>5}ms] alert {:.0} pt high, keys {keys:?}, message begins {first:?}",
+            t0.elapsed().as_millis(),
+            window.frame().size.height
+        );
+    });
+}
+
 /// Runs `work` on the main thread inside whatever modal is running.
 fn dispatch_main(work: impl Fn() + 'static) {
     use objc2_core_foundation::{kCFRunLoopCommonModes, CFRunLoop};
@@ -155,15 +206,23 @@ fn main() {
                         }
                     }
                     "early-click" => {
-                        // Presses Allow 100 ms after the alert opens, then again at 1 s:
-                        // the first is swallowed and the alert stays; the second answers.
+                        // Presses Allow 400 ms after the alert opens, again 300 ms later,
+                        // and again a second after that: the first two are swallowed and
+                        // the alert stays, opening with the rerun notice from the first
+                        // on (#65); the third answers. The second lands more than the
+                        // settle interval after the alert first became key but less after
+                        // the rerun did, so it is swallowed only if the rerun starts the
+                        // interval again.
                         let (_, j) = ask(&gate, run, "echo early-click".into(), t0, "A");
                         at(100);
-                        eprintln!("[{:>5}ms] click Allow", t0.elapsed().as_millis());
-                        click_allow();
-                        at(900);
-                        eprintln!("[{:>5}ms] click Allow", t0.elapsed().as_millis());
-                        click_allow();
+                        describe(t0);
+                        for wait in [300, 300, 1000] {
+                            at(wait);
+                            eprintln!("[{:>5}ms] click Allow", t0.elapsed().as_millis());
+                            click_allow();
+                            at(50);
+                            describe(t0);
+                        }
                         j.join().unwrap();
                     }
                     "human" => {
