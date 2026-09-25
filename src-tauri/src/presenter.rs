@@ -103,6 +103,33 @@ pub fn abandon_for_key(chars: &str, modifier_flags: usize) -> Option<Abandon> {
     }
 }
 
+/// The line a rerun alert opens with (#65): an early *Allow* was ignored and the request on
+/// screen is the one already shown, not a new one. It is the first line of the message text,
+/// above anything the request supplies, and it holds a character outside printable ASCII,
+/// which `escape` and `escape_inline` never let through, so no field of a request can show
+/// the same line.
+pub const RERUN_NOTICE: &str = "Allow was pressed before this alert was ready \u{2014} \
+                                this is the same request.";
+
+/// The alert's message text: the title, each parsed field on a labelled line below it, and,
+/// on a rerun, [`RERUN_NOTICE`] above them all. The body is not part of it: it keeps its
+/// newlines, so a body sharing a field with labels could forge one.
+pub fn message_text(title: &str, parsed: &[(String, String)], rerun: bool) -> String {
+    let mut message = String::new();
+    if rerun {
+        message.push_str(RERUN_NOTICE);
+        message.push('\n');
+    }
+    message.push_str(title);
+    for (label, value) in parsed {
+        message.push('\n');
+        message.push_str(label);
+        message.push_str(": ");
+        message.push_str(value);
+    }
+    message
+}
+
 /// The shell's hook for [`Abandon`]: told what was asked and the invocation on screen. It
 /// is called on the main thread, inside the modal, so it must hand the work off and return;
 /// what it starts reaches the alert as a withdrawal, which aborts the modal.
@@ -138,8 +165,11 @@ const LINE_HEIGHT: f64 = 16.0;
 /// alert does not take focus: an application that is not frontmost asks for attention,
 /// and the settle interval starts again each time the alert becomes the key window. An
 /// *Allow* inside it — or before the alert has ever been key — is not an answer: the
-/// alert is run again, unchanged, rather than the request refused, since the click that
-/// brings the application forward is the one most likely to land on it.
+/// alert is run again rather than the request refused, since the click that brings the
+/// application forward is the one most likely to land on it. The rerun opens with
+/// [`RERUN_NOTICE`] until it is answered, so it does not read as a second request; its
+/// body and buttons are unchanged. Whether the alert fits is decided with and without the
+/// notice, so a rerun is never taller than the screen.
 pub struct NativeAlert {
     state: Arc<Mutex<State>>,
     settle: Duration,
@@ -312,16 +342,8 @@ fn run_alert(
     responder: Responder,
 ) {
     let alert = NSAlert::new(mtm);
-    // The parsed fields go with the title, the raw body alone below it: the body keeps its
-    // newlines, so a body sharing a field with labels could forge one.
-    let mut message = rendered.title.clone();
-    for (label, value) in &rendered.parsed {
-        message.push('\n');
-        message.push_str(label);
-        message.push_str(": ");
-        message.push_str(value);
-    }
-    alert.setMessageText(&NSString::from_str(&message));
+    let message = NSString::from_str(&message_text(&rendered.title, &rendered.parsed, false));
+    let rerun_message = NSString::from_str(&message_text(&rendered.title, &rendered.parsed, true));
     alert.setInformativeText(&NSString::from_str(&rendered.body));
     for caption in buttons() {
         alert.addButtonWithTitle(&NSString::from_str(caption));
@@ -329,16 +351,18 @@ fn run_alert(
 
     // Return must press the negative and nothing may press the affirmative from the
     // keyboard. `NSAlert` assigns both from the order and the captions; check what it did
-    // rather than trust it.
-    let keys: Vec<String> = alert
-        .buttons()
-        .iter()
-        .map(|b| b.keyEquivalent().to_string())
-        .collect();
-    if keys != ["\r", ""] {
-        responder.fail(PresenterError(format!(
-            "unexpected key equivalents: {keys:?}"
-        )));
+    // rather than trust it — here, and again after a rerun changes the text.
+    let unexpected_keys = |alert: &NSAlert| {
+        let keys: Vec<String> = alert
+            .buttons()
+            .iter()
+            .map(|b| b.keyEquivalent().to_string())
+            .collect();
+        (keys != ["\r", ""])
+            .then(|| PresenterError(format!("unexpected key equivalents: {keys:?}")))
+    };
+    if let Some(e) = unexpected_keys(&alert) {
+        responder.fail(e);
         return;
     }
 
@@ -358,13 +382,18 @@ fn run_alert(
         responder.does_not_fit();
         return;
     }
-    alert.layout();
-    let height = alert.window().frame().size.height;
-    let fits = matches!(
-        height.partial_cmp(&room),
-        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-    );
-    if !fits {
+    // Laid out with the rerun's text and then with the first one, which is left in place:
+    // the notice changes the wrapping, so neither height is assumed from the other.
+    let fits = |text: &NSString| {
+        alert.setMessageText(text);
+        alert.layout();
+        let height = alert.window().frame().size.height;
+        matches!(
+            height.partial_cmp(&room),
+            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+        )
+    };
+    if !fits(&rerun_message) || !fits(&message) {
         responder.does_not_fit();
         return;
     }
@@ -447,15 +476,29 @@ fn run_alert(
     // an alert withdrawn while the application stays behind must cancel its own.
     let attention = (!app.isActive())
         .then(|| app.requestUserAttention(NSRequestUserAttentionType::CriticalRequest));
+    // An *Allow* after Cmd-. or Cmd-Q is ignored for another reason — the run is ending —
+    // so it adds no notice; one already shown stays.
+    let mut noticed = false;
     let response = loop {
+        // `runModal` assigns the key equivalents as it starts and clears both as it ends —
+        // measured: Return is Deny and Allow has none during every run, the rerun included,
+        // and both read empty between runs, so they are checked once, before the first.
         let response = alert.runModal();
         let key_at = key.lock().map(|k| *k).unwrap_or(None);
-        if slot_for_response(response).and_then(answer_for_slot) == Some(Answer::Allow)
-            && (abandoned.get() || !settled(key_at, Instant::now(), settle))
-        {
+        if slot_for_response(response).and_then(answer_for_slot) != Some(Answer::Allow) {
+            break response;
+        }
+        if abandoned.get() {
             continue;
         }
-        break response;
+        if settled(key_at, Instant::now(), settle) {
+            break response;
+        }
+        if !noticed {
+            noticed = true;
+            alert.setMessageText(&rerun_message);
+            alert.layout();
+        }
     };
     lock(state).live = None;
     drop(monitor);
@@ -561,6 +604,29 @@ mod tests {
         assert_eq!(answer_for_slot(1), Some(Answer::Allow));
         assert_eq!(answer_for_slot(2), None);
         assert_eq!(answer_for_slot(usize::MAX), None);
+    }
+
+    #[test]
+    fn a_rerun_opens_with_the_notice_and_is_otherwise_the_same_message() {
+        let parsed = vec![("Cwd".to_string(), "/tmp".to_string())];
+        let first = message_text("run 1 (native) \u{2014} shell command", &parsed, false);
+        assert_eq!(first, "run 1 (native) \u{2014} shell command\nCwd: /tmp");
+        let rerun = message_text("run 1 (native) \u{2014} shell command", &parsed, true);
+        assert_eq!(rerun, format!("{RERUN_NOTICE}\n{first}"));
+        assert_eq!(message_text("t", &[], true), format!("{RERUN_NOTICE}\nt"));
+    }
+
+    #[test]
+    fn no_request_field_can_show_the_rerun_notice() {
+        // Everything a request supplies is escaped, which never lets a character outside
+        // printable ASCII through; the notice holds one.
+        assert!(RERUN_NOTICE.chars().any(|c| !(' '..='~').contains(&c)));
+        assert!(!RERUN_NOTICE.contains('\n'));
+        let escaped = stanchion_core::consent::render::escape(RERUN_NOTICE.as_bytes());
+        assert_ne!(escaped, RERUN_NOTICE);
+        assert!(!escaped.contains(RERUN_NOTICE));
+        let inline = stanchion_core::consent::render::escape_inline(RERUN_NOTICE.as_bytes());
+        assert!(!inline.contains(RERUN_NOTICE));
     }
 
     #[test]
