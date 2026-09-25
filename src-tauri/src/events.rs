@@ -388,7 +388,15 @@ impl EventSink for ChannelSink {
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&invocation.raw());
             }
-            Event::Exited { .. } => self.exited.store(true, Ordering::SeqCst),
+            Event::Exited { .. } => {
+                // A request still pending when the attachment ends is withdrawn by the
+                // lease's end and never resolved here.
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
+                self.exited.store(true, Ordering::SeqCst);
+            }
             _ => {}
         }
         let _ = self.channel.send(ConversationEvent {
