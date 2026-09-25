@@ -548,6 +548,40 @@ fn not_signed_in_surfaces_on_the_first_turn() {
     assert!(got.contains(&Event::Diagnostic {
         text: "claude: Not logged in \\u{B7} Please run /login".into()
     }));
+    // Where to sign in is the binary and the directory this attachment was spawned
+    // with, not the account id: the directory name is the id encoded.
+    let config_dir = dirs
+        .root
+        .canonicalize()
+        .unwrap()
+        .join(dir_name(&account().0));
+    assert_eq!(
+        got.last(),
+        Some(&Event::TurnEnded {
+            turn,
+            end: TurnEnd::NotSignedIn {
+                how: format!(
+                    "run {FAKE} with CLAUDE_CONFIG_DIR set to \"{}\", then /login",
+                    config_dir.display()
+                )
+            }
+        })
+    );
+}
+
+#[test]
+fn not_signed_in_without_the_error_field_is_a_plain_failure() {
+    // A CLI that says so only in the text — as 2.1.266 did — is not second-guessed: the
+    // text is not parsed, so the turn fails as any `api_error` does.
+    let dirs = Dirs::new("not-logged-in-old");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs).env("FAKE_CLAUDE_NOT_LOGGED_IN", "2.1.266");
+    let session = start(&backend, &dirs, &events);
+    let turn = session.send(UserInput { text: "hi".into() }).unwrap();
+    let got = events.wait_for("TurnEnded", is_turn_ended);
+    assert!(got.contains(&Event::Diagnostic {
+        text: "claude: Not logged in \\u{B7} Please run /login".into()
+    }));
     assert_eq!(
         got.last(),
         Some(&Event::TurnEnded {

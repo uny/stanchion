@@ -26,10 +26,15 @@
 //!   user's own sign-in left: the CLI answers the first turn with an assistant message
 //!   whose `model` is `<synthetic>` and whose text says not logged in, then a `result`
 //!   with `is_error: true` and `terminal_reason: api_error`, and exits 1 when stdin
-//!   closes. The same shape carries an expired OAuth session. `init` looks the same
-//!   either way — `apiKeySource: "none"` on a working subscription too — so
-//!   [`BackendError::NotSignedIn`] cannot be decided at `start`; the state surfaces as a
-//!   [`Event::Diagnostic`] and a [`TurnEnd::Failed`] on the first turn.
+//!   closes. An expired OAuth session was seen in the same shape on 2.1.266. `init` looks
+//!   the same either way — `apiKeySource: "none"` on a working subscription too — so
+//!   [`BackendError::NotSignedIn`] cannot be decided at `start`; the state surfaces on
+//!   the first turn instead. On 2.1.281 (#64) the `assistant` line also carries, beside
+//!   the message rather than in it, `"error": "authentication_failed"` — the `result`
+//!   line still says only `api_error` — so that line's text becomes an
+//!   [`Event::Diagnostic`] and the turn ends [`TurnEnd::NotSignedIn`]. Whether an
+//!   expired session carries the same field is not measured; a CLI that does not send
+//!   it gets [`TurnEnd::Failed`], as before.
 //! - `MessagePartial` deltas arrive only with `--include-partial-messages`, as
 //!   `stream_event` lines whose `event.type` is `content_block_delta`. Four delta types
 //!   appear — `text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta` —
@@ -211,6 +216,17 @@ fn dir_name(account: &str) -> String {
     out
 }
 
+/// Where an account signs in: the unmodified CLI, run against its own config directory
+/// (#41). Prose rather than a command line, since the path usually has a space in it.
+fn sign_in(binary: &Path, config_dir: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    format!(
+        "run {} with CLAUDE_CONFIG_DIR set to \"{}\", then /login",
+        escape_inline(binary.as_os_str().as_bytes()),
+        escape_inline(config_dir.as_os_str().as_bytes())
+    )
+}
+
 /// Creates `path` with mode 0700, or tightens an existing directory to it.
 fn create_private_dir(path: &Path) -> io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
@@ -389,6 +405,7 @@ impl ClaudeCode {
             // checked and run in — not a relative path or a symlink that may point
             // elsewhere by the time of a resume.
             workspace_root: cwd,
+            sign_in: sign_in(&self.binary, &config_dir),
             events,
             child: Mutex::new(child),
             stdin: Mutex::new(Some(stdin)),
@@ -509,6 +526,8 @@ struct OpenTurn {
     /// Gate requests opened for this turn and not yet resolved; cancelled at its end.
     pending: Vec<InvocationId>,
     interrupting: bool,
+    /// The CLI said, on an `assistant` line of this turn, that it has no credential.
+    not_signed_in: bool,
 }
 
 struct State {
@@ -532,6 +551,9 @@ struct Shared {
     approval: Listener,
     account: AccountId,
     workspace_root: PathBuf,
+    /// What a turn that failed for want of a credential tells the user to do: the
+    /// binary and the config directory this attachment was spawned with, verbatim.
+    sign_in: String,
     events: Arc<dyn EventSink>,
     child: Mutex<Child>,
     stdin: Mutex<Option<ChildStdin>>,
@@ -604,6 +626,7 @@ impl Shared {
             asked: Asked::new(),
             pending: Vec::new(),
             interrupting: false,
+            not_signed_in: false,
         });
         out.push(Event::TurnStarted { turn });
         Ok(turn)
@@ -759,6 +782,14 @@ impl Shared {
             .get("content")
             .and_then(Value::as_array)
             .unwrap_or(&[]);
+        // The CLI's own verdict, on the line beside the message rather than in it, so
+        // nothing the model writes can set it. Checked before the `<synthetic>` return:
+        // it is the field that decides, not the model name.
+        if value.get("error").and_then(Value::as_str) == Some("authentication_failed") {
+            if let Some(turn) = state.turn.as_mut() {
+                turn.not_signed_in = true;
+            }
+        }
         // `<synthetic>` is the CLI speaking in the model's slot — "not logged in", a
         // refused request — not the model. It goes to the log, not the conversation.
         if message.get("model").and_then(Value::as_str) == Some("<synthetic>") {
@@ -968,13 +999,19 @@ impl Shared {
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
-            let reason = value
-                .get("terminal_reason")
-                .and_then(Value::as_str)
-                .or_else(|| value.get("subtype").and_then(Value::as_str))
-                .unwrap_or("unknown");
-            TurnEnd::Failed {
-                detail: format!("the CLI reported {}", escape_inline(reason.as_bytes())),
+            if turn.not_signed_in {
+                TurnEnd::NotSignedIn {
+                    how: self.sign_in.clone(),
+                }
+            } else {
+                let reason = value
+                    .get("terminal_reason")
+                    .and_then(Value::as_str)
+                    .or_else(|| value.get("subtype").and_then(Value::as_str))
+                    .unwrap_or("unknown");
+                TurnEnd::Failed {
+                    detail: format!("the CLI reported {}", escape_inline(reason.as_bytes())),
+                }
             }
         } else {
             TurnEnd::Completed
