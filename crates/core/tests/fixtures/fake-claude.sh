@@ -8,7 +8,9 @@
 #   FAKE_CLAUDE_INIT_FIRST=1   emit `system/init` at startup, before any input (the
 #                              contract allows either; the real CLI waits for input and
 #                              then repeats init for every turn, which this does too)
-#   FAKE_CLAUDE_NOT_LOGGED_IN=1 answer the first input as an unauthenticated CLI does
+#   FAKE_CLAUDE_NOT_LOGGED_IN=1 answer every input as an unauthenticated CLI does
+#                              (2.1.281: `error` beside the message); `=2.1.266` the
+#                              same without it, as that version answered
 #   FAKE_CLAUDE_CRASH_AFTER=N  die by SIGKILL after the N-th result line
 #   FAKE_CLAUDE_EXIT_AFTER=N   exit 3 after the N-th result line
 #   FAKE_CLAUDE_NO_DENIALS=1   omit `permission_denials` from the result line
@@ -119,8 +121,12 @@ while IFS= read -r line; do
       note "user:$line"
       init_done=0
       emit_init
-      if [ "${FAKE_CLAUDE_NOT_LOGGED_IN:-0}" = "1" ]; then
-        printf '%s\n' '{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Not logged in · Please run /login"}]}}'
+      if [ "${FAKE_CLAUDE_NOT_LOGGED_IN:-0}" != "0" ]; then
+        if [ "$FAKE_CLAUDE_NOT_LOGGED_IN" = "2.1.266" ]; then
+          printf '%s\n' '{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Not logged in · Please run /login"}]}}'
+        else
+          printf '%s\n' '{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Not logged in · Please run /login"}]},"session_id":"'"$SESSION"'","error":"authentication_failed","is_api_error_message":true}'
+        fi
         emit_result '{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","session_id":"'"$SESSION"'","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0},"permission_denials":[],"result":"Not logged in · Please run /login"}'
         continue
       fi

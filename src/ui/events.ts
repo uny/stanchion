@@ -30,6 +30,7 @@ export type TurnEndRef =
   | { kind: "completed" }
   | { kind: "interrupted" }
   | { kind: "failed"; detail: string }
+  | { kind: "not_signed_in"; how: string }
   | { kind: "cut" };
 
 export type ExitRef =
@@ -91,7 +92,14 @@ export function describe(e: EventRef): string {
     case "diagnostic":
       return `diagnostic: ${e.text}`;
     case "turn_ended":
-      return `turn ${e.turn} ${e.end.kind}${e.end.kind === "failed" ? `: ${e.end.detail}` : ""}`;
+      switch (e.end.kind) {
+        case "failed":
+          return `turn ${e.turn} failed: ${e.end.detail}`;
+        case "not_signed_in":
+          return `turn ${e.turn} failed: this account is not signed in — ${e.end.how}`;
+        default:
+          return `turn ${e.turn} ${e.end.kind}`;
+      }
     case "exited":
       return `exited (${e.exit.kind}${
         e.exit.kind === "exited" ? ` ${e.exit.status ?? "?"}` : e.exit.kind === "crashed" ? `: ${e.exit.detail}` : ""

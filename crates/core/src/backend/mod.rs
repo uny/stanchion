@@ -405,6 +405,10 @@ pub enum TurnEnd {
     Interrupted,
     /// The backend reported the turn failed. `detail` is core-generated.
     Failed { detail: String },
+    /// The backend reported the turn failed because the account has no credential.
+    /// `how` is core-generated: where the user signs in, through the backend's own flow
+    /// (#41).
+    NotSignedIn { how: String },
     /// The attachment ended under it. What a resume does with it is
     /// [`Capabilities::after_crash`].
     Cut,

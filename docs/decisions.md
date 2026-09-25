@@ -885,10 +885,25 @@ background `sleep 60 && date` on its own (reported as `RanWithoutAsking`), and i
 turn of its own when a background task finishes, which the backend reports only as
 diagnostics outside a turn.
 
+**A turn that fails for want of a credential says so (#64).** An account whose config
+directory holds no sign-in failed its turn as `api_error`, the same as an outage. On
+`claude` 2.1.281 the CLI's synthetic "Not logged in" line carries a field beside the message,
+`"error": "authentication_failed"`, while the `result` line still says only `api_error`; so
+the backend marks the open turn when it sees that field and ends it `TurnEnd::NotSignedIn`,
+whose text names the binary and the config directory the attachment was spawned with and
+says to run `/login` there. The field is on the CLI's line, not in the model's message, so
+no model output can set it; the "Not logged in" text is not parsed, and a CLI that does not
+send the field fails the turn as before. An interrupt still takes precedence. The sign-in
+stays the CLI's own flow (#41). The config directory's path now reaches the WebView as text;
+no command reads it. Both paths are escaped as any core-generated value is, so a non-ASCII
+character in either shows as `\u{..}` rather than as itself. Whether an expired OAuth
+session carries the same field is not measured.
+
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that
 names either; a
 capability read on the approval path; a backend that reports usage as zero when it has not
 reported it; a cost figure shown as a subscription's bill; a helper path or MCP
 configuration read from a settings file the model can reach; a second relay for the bridge;
-a terminate that ends the CLI and leaves the command it was running.
+a terminate that ends the CLI and leaves the command it was running; a sign-in failure
+decided from the CLI's wording.

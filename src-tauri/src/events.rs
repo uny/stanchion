@@ -115,6 +115,7 @@ pub enum TurnEndRef {
     Completed,
     Interrupted,
     Failed { detail: String },
+    NotSignedIn { how: String },
     Cut,
 }
 
@@ -124,6 +125,7 @@ impl From<TurnEnd> for TurnEndRef {
             TurnEnd::Completed => TurnEndRef::Completed,
             TurnEnd::Interrupted => TurnEndRef::Interrupted,
             TurnEnd::Failed { detail } => TurnEndRef::Failed { detail },
+            TurnEnd::NotSignedIn { how } => TurnEndRef::NotSignedIn { how },
             TurnEnd::Cut => TurnEndRef::Cut,
         }
     }
