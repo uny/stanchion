@@ -648,7 +648,8 @@ something unexpected — nothing executes, and on a CLI backend the deny reply s
   Either way the run ends and the gate withdraws the request, which aborts the modal; no
   key answers, every other key goes on to the alert, and Return still presses Deny. The
   gate hears of it only once the run's end is observed, so until then the alert stays up,
-  and an *Allow* clicked on it after either key is not an answer: the alert is run again.
+  and an *Allow* clicked on it after either key is not an answer: the alert is run again
+  (read from the code, not measured — the probe clicks nothing after a key).
   Measured: the monitor sees key events during `runModal`, and in the application Cmd-.
   ended that conversation alone and Cmd-Q quit with no CLI left, the command running in
   neither. The CLI is killed before a deny could reach it, so what these keys guarantee
