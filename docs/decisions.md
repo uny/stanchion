@@ -895,8 +895,9 @@ says to run `/login` there. The field is on the CLI's line, not in the model's m
 no model output can set it; the "Not logged in" text is not parsed, and a CLI that does not
 send the field fails the turn as before. An interrupt still takes precedence. The sign-in
 stays the CLI's own flow (#41). The config directory's path now reaches the WebView as text;
-no command reads it. Whether an expired OAuth session carries the same field is not
-measured.
+no command reads it. Both paths are escaped as any core-generated value is, so a non-ASCII
+character in either shows as `\u{..}` rather than as itself. Whether an expired OAuth
+session carries the same field is not measured.
 
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that

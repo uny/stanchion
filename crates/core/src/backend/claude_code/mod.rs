@@ -552,7 +552,8 @@ struct Shared {
     account: AccountId,
     workspace_root: PathBuf,
     /// What a turn that failed for want of a credential tells the user to do: the
-    /// binary and the config directory this attachment was spawned with, verbatim.
+    /// binary and the config directory this attachment was spawned with, through
+    /// [`escape_inline`], so a non-ASCII character in either shows as `\u{..}`.
     sign_in: String,
     events: Arc<dyn EventSink>,
     child: Mutex<Child>,
