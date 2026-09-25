@@ -30,6 +30,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSApplication, NSEvent,
@@ -288,6 +290,17 @@ fn finish(state: &Mutex<State>, id: u64) {
     s.cancelled.remove(&id);
 }
 
+/// A local event monitor, removed when dropped — on an unwind out of the modal too, so a
+/// stale one is never left taking Cmd-. from every later alert.
+struct Monitor(Retained<AnyObject>);
+
+impl Drop for Monitor {
+    fn drop(&mut self) {
+        // SAFETY: the monitor was returned by `addLocalMonitorForEventsMatchingMask:`.
+        unsafe { NSEvent::removeMonitor(&self.0) };
+    }
+}
+
 /// Builds, checks, lays out and runs one alert, and answers for it. Main thread only.
 fn run_alert(
     mtm: MainThreadMarker,
@@ -423,11 +436,11 @@ fn run_alert(
             }
         })
     };
-    // SAFETY: the block returns the event it was given or null, as the monitor requires;
-    // the monitor is removed below, before the block is dropped.
+    // SAFETY: the block returns the event it was given or null, as the monitor requires.
     let monitor = unsafe {
         NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &keys)
-    };
+    }
+    .map(Monitor);
 
     let app = NSApplication::sharedApplication(mtm);
     // A critical request bounces until the application is activated or it is cancelled, so
@@ -445,10 +458,7 @@ fn run_alert(
         break response;
     };
     lock(state).live = None;
-    if let Some(monitor) = monitor {
-        // SAFETY: the monitor was returned by `addLocalMonitorForEventsMatchingMask:` above.
-        unsafe { NSEvent::removeMonitor(&monitor) };
-    }
+    drop(monitor);
     if let Some(request) = attention {
         app.cancelUserAttentionRequest(request);
     }
