@@ -26,7 +26,7 @@
 //!
 //! A third is a probe, not a pin (#67): it asserts nothing about what it finds, and prints a
 //! table. Per cell it starts a fresh session, asks for exactly one read-only call — a
-//! shell `ls`, `cat` or `jq`, or the `Read`, `Glob` or `Grep` tool — aimed at a synthetic
+//! shell `ls`, `cat`, `jq`, `find` or `grep`, or the `Read` tool — aimed at a synthetic
 //! file in the workspace, in the account's own config directory, in a sibling account
 //! directory it creates under the same root, or outside all three, and records whether
 //! the CLI ran it without asking, asked (and was refused, by the gate or at the helper's
@@ -36,7 +36,8 @@
 //! All three are ignored, and gated on an environment variable besides: they spawn the
 //! real binary, and the first and the probe need a signed-in config directory and spend
 //! the user's subscription (the probe one turn per cell; `STANCHION_PROBE_ONLY` narrows
-//! it to cells whose label contains the value). Run them deliberately:
+//! it to cells whose label contains one of its comma-separated values). Run them
+//! deliberately:
 //!
 //! ```text
 //! STANCHION_REAL_CLAUDE=1 \
@@ -373,7 +374,7 @@ fn cells(targets: &[Target], root: &std::path::Path, sibling: &std::path::Path) 
         },
     ];
     for t in targets {
-        let (dir, file) = (t.dir.display(), t.file.display());
+        let file = t.file.display();
         cells.extend([
             Cell {
                 label: format!("{}/Bash ls", t.label),
@@ -403,20 +404,20 @@ fn cells(targets: &[Target], root: &std::path::Path, sibling: &std::path::Path) 
                 marker: t.file_name(),
                 proof: t.nonce.clone(),
             },
+            // `Glob` and `Grep` are not in the CLI's tool list on 2.1.281 (`init.tools`);
+            // a search goes through the shell.
             Cell {
-                label: format!("{}/Glob", t.label),
-                tool: "Glob",
-                call: format!(r#"{{"pattern": "*.jsonl", "path": "{dir}"}}"#),
-                marker: "jsonl".into(),
+                label: format!("{}/Bash find", t.label),
+                tool: "Bash",
+                call: format!("find {} -name '*.jsonl'", sh(&t.dir)),
+                marker: "find".into(),
                 proof: t.file_name(),
             },
             Cell {
-                label: format!("{}/Grep", t.label),
-                tool: "Grep",
-                call: format!(
-                    r#"{{"pattern": "nonce", "path": "{dir}", "output_mode": "content"}}"#
-                ),
-                marker: "nonce".into(),
+                label: format!("{}/Bash grep", t.label),
+                tool: "Bash",
+                call: format!("grep -r nonce {}", sh(&t.dir)),
+                marker: "grep".into(),
                 proof: t.nonce.clone(),
             },
         ]);
@@ -510,7 +511,10 @@ fn probe_what_a_cli_reads_outside_its_workspace() {
     let mut rows = Vec::new();
     let mut stalled = Vec::new();
     for (i, cell) in cells(&targets, &root, &sibling).iter().enumerate() {
-        if only.as_deref().is_some_and(|o| !cell.label.contains(o)) {
+        if only
+            .as_deref()
+            .is_some_and(|o| !o.split(',').any(|o| cell.label.contains(o)))
+        {
             continue;
         }
         let gate = Arc::new(Consent::new(
