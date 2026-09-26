@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use stanchion_core::backend::{
-    ConversationId, Delivery, Event, EventSink, Exit, Message, Role, SessionId, TurnEnd, Usage,
+    ConversationId, Delivery, Event, EventSink, Exit, Message, Role, SessionId, TurnEnd,
+    TurnOrigin, Usage,
 };
 use stanchion_core::consent::presenter::Rendered;
 use tauri::ipc::Channel;
@@ -131,6 +132,23 @@ impl From<TurnEnd> for TurnEndRef {
     }
 }
 
+/// Who started a turn: the caller's own input or inbox delivery, or the backend on its own.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnOriginRef {
+    Caller,
+    Backend,
+}
+
+impl From<TurnOrigin> for TurnOriginRef {
+    fn from(o: TurnOrigin) -> Self {
+        match o {
+            TurnOrigin::Caller => TurnOriginRef::Caller,
+            TurnOrigin::Backend => TurnOriginRef::Backend,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExitRef {
@@ -157,6 +175,7 @@ pub enum EventRef {
     },
     TurnStarted {
         turn: u64,
+        origin: TurnOriginRef,
     },
     MessagePartial {
         turn: u64,
@@ -223,7 +242,10 @@ impl From<Event> for EventRef {
             Event::SessionOpened { session } => EventRef::SessionOpened {
                 session: SessionRef::from(&session),
             },
-            Event::TurnStarted { turn } => EventRef::TurnStarted { turn: turn.raw() },
+            Event::TurnStarted { turn, origin } => EventRef::TurnStarted {
+                turn: turn.raw(),
+                origin: origin.into(),
+            },
             Event::MessagePartial { turn, text } => EventRef::MessagePartial {
                 turn: turn.raw(),
                 text,

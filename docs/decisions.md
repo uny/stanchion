@@ -882,8 +882,8 @@ Terminate and Quit do nothing, and the way out is to answer it — Deny is the s
 the state the window returns to usability from; Cmd-. and Cmd-Q were added afterwards
 (#62) as a way to stop without answering. Also seen: the CLI allows a
 background `sleep 60 && date` on its own (reported as `RanWithoutAsking`), and it starts a
-turn of its own when a background task finishes, which the backend reports only as
-diagnostics outside a turn.
+turn of its own when a background task finishes, which the backend then reported only as
+diagnostics outside a turn (reported as a turn since #63, below).
 
 **A turn that fails for want of a credential says so (#64).** An account whose config
 directory holds no sign-in failed its turn as `api_error`, the same as an outage. On
@@ -921,6 +921,27 @@ reads were already the CLI's rules to decide, and those rules ask; an allow rule
 an account's settings would widen them as it widens anything. The observation that opened
 #67, a fresh session listing its config directory and reading earlier transcripts without
 an approval, did not reproduce; whether an approval was given at the time is not known.
+
+**A turn the CLI starts is a turn (#63).** Claude Code starts a turn with no input when a
+background task it ran finishes: `init`, the model's messages and calls, and a `result`
+arrive between the caller's turns. Before this change that turn's reply reached only the
+log and every approval request in it was denied at the socket's door ("no turn is open"),
+so nothing it asked for ran. Now an `init` with no turn open — once a `result` has been
+seen on the attachment, so an `init` at startup is not one, and not after `terminate` —
+opens a turn marked `TurnOrigin::Backend` on `TurnStarted`. Its calls take the path every
+turn's do: a request reaches the gate with the command in the dialog, the `result` is
+reconciled into `RanWithoutAsking`, interrupt and terminate reach it, and the caller's
+input waits for it (`Busy`, the inbox held). That widens what reaches the gate from a turn
+the user did not start, from refused at the door to asked, and it is the point of the
+change; the origin changes no gate decision. The dialog itself does not say which turn
+asked. Two orderings are accepted rather than solved. An approval request the socket
+thread takes before the reading thread has processed its turn's `init` is still denied at
+the door, which fails closed. And the stream carries nothing that ties a turn to the input
+that caused it: if the CLI starts a turn of its own just as the backend writes an input —
+the user's, or the inbox's, which is written as soon as the previous turn ends — the CLI's
+turn is reported under the input's turn id, and each later turn under the id before it
+until no input is waiting; the approvals themselves are unaffected, since each call is
+asked about by its own command.
 
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that

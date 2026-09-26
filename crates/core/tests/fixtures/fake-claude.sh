@@ -23,6 +23,8 @@
 #   `<account>` is the last component of CLAUDE_CONFIG_DIR, so two accounts run from
 #   one backend (one environment) keep separate logs and are released separately.
 #   FAKE_CLAUDE_TOOLS=path     prefix for the markers of the "tools" turn (below)
+#   Inputs whose text is `background` or `background-open` end their own turn at once
+#   and are followed, with no input, by a turn the fake starts itself (below).
 #   FAKE_CLAUDE_ASK=1          on the default turn, ask about `toolu_denied` the way the
 #                              real CLI does: spawn the helper named in --mcp-config, drive
 #                              the MCP handshake and one tools/call, and act on the reply
@@ -149,6 +151,36 @@ while IFS= read -r line; do
             "$tools.session" </dev/null >/dev/null 2>&1 &
           ( : > "$tools.group.started"; sleep 3; : > "$tools.group" ) </dev/null >/dev/null 2>&1 &
           printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"tool_use","id":"toolu_running","name":"Bash","input":{"command":"sleep 3 && touch marker"}}]}}'
+          continue
+          ;;
+        *'"text":"background"'* | *'"text":"background-open"'*)
+          # A turn that leaves a task running in the background and ends; then, with no
+          # input, the turn the real CLI (2.1.280) starts of its own when that task
+          # finishes (#63): `init` again, the model's reply and its calls, a `result`.
+          # `background-open` leaves that turn open, a call in flight, until interrupted
+          # or killed. `background` holds it, as the default turn, on FAKE_CLAUDE_HOLD.
+          printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"text","text":"started"}]}}'
+          emit_result '{"type":"result","subtype":"success","is_error":false,"session_id":"'"$SESSION"'","total_cost_usd":0.001,"usage":{"input_tokens":2,"output_tokens":1},"permission_denials":[]}'
+          init_done=0
+          emit_init
+          note "unprompted"
+          printf '%s\n' '{"type":"system","subtype":"status","status":"requesting"}'
+          case "$line" in
+            *'"text":"background-open"'*)
+              printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"tool_use","id":"toolu_bg_cut","name":"Bash","input":{"command":"sleep 600"}}]}}'
+              continue
+              ;;
+          esac
+          printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"text","text":"background done"},{"type":"tool_use","id":"toolu_bg_ran","name":"Read","input":{"file_path":"out.txt"}},{"type":"tool_use","id":"toolu_bg_asked","name":"Bash","input":{"command":"echo after"}}]}}'
+          if [ -n "${FAKE_CLAUDE_HOLD:-}" ]; then
+            i=0
+            while [ ! -e "$FAKE_CLAUDE_HOLD" ] && [ "$i" -lt 500 ]; do
+              sleep 0.02
+              i=$((i + 1))
+            done
+          fi
+          printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bg_ran","content":"done","is_error":false},{"type":"tool_result","tool_use_id":"toolu_bg_asked","content":"after","is_error":false}]}}'
+          emit_result '{"type":"result","subtype":"success","is_error":false,"session_id":"'"$SESSION"'","total_cost_usd":0.002,"usage":{"input_tokens":4,"output_tokens":3},"permission_denials":[]}'
           continue
           ;;
         *'"text":"die"'*)

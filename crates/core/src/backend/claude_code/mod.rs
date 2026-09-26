@@ -59,6 +59,14 @@
 //!   tool the CLI does not offer comes back as an error result and is in neither
 //!   `permission_denials` nor the asked set, so it is reported as
 //!   [`Event::RanWithoutAsking`] though nothing ran.
+//! - On 2.1.280 (#46), when a background task finishes the CLI starts a turn with no
+//!   input: `init`, the model's messages and a `result` arrive between the caller's
+//!   turns. An `init` with no turn open, once a `result` has been seen on the attachment,
+//!   opens a turn marked [`TurnOrigin::Backend`], and its calls take the approval path any
+//!   turn's do (#63). What the stream does not carry is which input a turn answers: a
+//!   turn the CLI starts just as an input is written is reported under the input's turn,
+//!   and an approval request taken before the reading thread has seen its `init` is
+//!   denied at the door (`docs/decisions.md`).
 //!
 //! # Runtime
 //!
@@ -96,7 +104,7 @@ use super::sealed::Sealed;
 use super::{
     AccountId, ApprovalReach, Attachment, Backend, BackendError, Capabilities, CutTurn, Delivery,
     EstimatedUsd, Event, EventSink, Exit, InboxMessage, Message, Resume, Role, RunBackend, Session,
-    SessionId, Start, ToolCallId, TurnEnd, TurnId, Usage, UserInput,
+    SessionId, Start, ToolCallId, TurnEnd, TurnId, TurnOrigin, Usage, UserInput,
 };
 use crate::consent::render::{escape, escape_inline};
 use crate::consent::request::InvocationId;
@@ -425,6 +433,7 @@ impl ClaudeCode {
                 queue: VecDeque::new(),
                 terminated: false,
                 ended: false,
+                seen_result: false,
                 totals: None,
                 to_cancel: Vec::new(),
             }),
@@ -548,6 +557,10 @@ struct State {
     queue: VecDeque<InboxMessage>,
     terminated: bool,
     ended: bool,
+    /// A `result` line has arrived on this attachment. Only after one does an `init` with
+    /// no turn open start a turn of the CLI's own (#63): an `init` before any input — the
+    /// contract allows one at startup — would otherwise open a turn no `result` closes.
+    seen_result: bool,
     /// Totals over the turns that reported usage; `None` until one has.
     totals: Option<(u64, u64, Option<u64>)>,
     /// Gate requests a turn's end left behind, cancelled once `state` is released:
@@ -629,6 +642,11 @@ impl Shared {
         text: &str,
     ) -> Result<TurnId, BackendError> {
         self.write_line(&user_line(text))?;
+        Ok(self.open_turn(state, out, TurnOrigin::Caller))
+    }
+
+    /// Opens a turn in `state` and reports it.
+    fn open_turn(&self, state: &mut State, out: &mut Vec<Event>, origin: TurnOrigin) -> TurnId {
         let turn = self.lease.next_turn();
         state.turn = Some(OpenTurn {
             id: turn,
@@ -638,8 +656,8 @@ impl Shared {
             interrupting: false,
             not_signed_in: false,
         });
-        out.push(Event::TurnStarted { turn });
-        Ok(turn)
+        out.push(Event::TurnStarted { turn, origin });
+        turn
     }
 
     /// Sends the first held inbox message when no turn is open. On a failed write the
@@ -720,6 +738,13 @@ impl Shared {
                 });
             }
             return;
+        }
+        // `init` opens every turn the CLI runs. One with no turn open, once a turn has
+        // ended on this attachment, is a turn the CLI started itself — when a background
+        // task finishes (#63) — and it is reported as a turn, so its calls reach the gate
+        // as any other turn's do. Decided before anything below can return early.
+        if state.turn.is_none() && state.seen_result && !state.terminated && !state.ended {
+            self.open_turn(state, out, TurnOrigin::Backend);
         }
         let field = |k: &str| {
             escape_inline(
@@ -919,6 +944,7 @@ impl Shared {
     }
 
     fn on_result(&self, state: &mut State, out: &mut Vec<Event>, value: &Value) {
+        state.seen_result = true;
         let Some(turn) = state.turn.take() else {
             out.push(Event::Diagnostic {
                 text: "result outside a turn".into(),
