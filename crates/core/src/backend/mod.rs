@@ -125,8 +125,9 @@ impl fmt::Display for SessionId {
 
 /// One turn: from an input the backend accepted — or, on a backend that starts turns of its
 /// own, the point it started one ([`TurnOrigin::Backend`]) — to the point the backend
-/// reports the model has stopped, however it stopped. Core-issued from one counter for the process, so a turn
-/// id is unique across every attachment and conversation, not merely within one.
+/// reports the model has stopped, however it stopped. Core-issued from one counter for the
+/// process, so a turn id is unique across every attachment and conversation, not merely
+/// within one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TurnId(u64);
 

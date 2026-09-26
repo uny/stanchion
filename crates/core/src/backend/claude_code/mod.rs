@@ -65,10 +65,10 @@
 //!   opens a turn marked [`TurnOrigin::Backend`], and its calls take the approval path any
 //!   turn's do (#63). Observed in the application on 2.1.281: after a background
 //!   `sleep`, the CLI's own turn ran `echo` unasked and asked about `touch`, which reached
-//!   the gate under that turn and ran once allowed. What the stream does not carry is which input a turn answers: a
-//!   turn the CLI starts just as an input is written is reported under the input's turn,
-//!   and an approval request taken before the reading thread has seen its `init` is
-//!   denied at the door (`docs/decisions.md`).
+//!   the gate under that turn and ran once allowed. What the stream does not carry is
+//!   which input a turn answers: a turn the CLI starts just as an input is written is
+//!   reported under the input's turn, and an approval request taken before the reading
+//!   thread has seen its `init` is denied at the door (`docs/decisions.md`).
 //!
 //! # Runtime
 //!
