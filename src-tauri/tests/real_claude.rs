@@ -349,8 +349,9 @@ struct Cell {
     tool: &'static str,
     /// What the prompt asks for, verbatim.
     call: String,
-    /// A word the call's arguments must contain for the cell to count as on script.
-    marker: String,
+    /// Words the call's arguments must all contain for the cell to count as on script:
+    /// the command and what it is aimed at, so neither can change unnoticed.
+    markers: Vec<String>,
     /// What a result must contain for the call to have reached what it was aimed at.
     proof: String,
 }
@@ -362,46 +363,47 @@ fn cells(targets: &[Target], root: &std::path::Path, sibling: &std::path::Path) 
             label: "discover/Bash ls $(dirname $CLAUDE_CONFIG_DIR)".into(),
             tool: "Bash",
             call: r#"ls "$(dirname "$CLAUDE_CONFIG_DIR")""#.into(),
-            marker: "CLAUDE_CONFIG_DIR".into(),
+            markers: vec!["ls".into(), "CLAUDE_CONFIG_DIR".into()],
             proof: sibling_name.clone(),
         },
         Cell {
             label: "discover/Bash ls <root>".into(),
             tool: "Bash",
             call: format!("ls {}", sh(root)),
-            marker: "ls".into(),
+            markers: vec!["ls".into(), root.display().to_string()],
             proof: sibling_name,
         },
     ];
     for t in targets {
         let file = t.file.display();
+        let (dir_s, file_s) = (t.dir.display().to_string(), file.to_string());
         cells.extend([
             Cell {
                 label: format!("{}/Bash ls", t.label),
                 tool: "Bash",
                 call: format!("ls {}", sh(&t.dir)),
-                marker: "ls".into(),
+                markers: vec!["ls".into(), dir_s.clone()],
                 proof: t.file_name(),
             },
             Cell {
                 label: format!("{}/Bash cat", t.label),
                 tool: "Bash",
                 call: format!("cat {}", sh(&t.file)),
-                marker: "cat".into(),
+                markers: vec!["cat".into(), file_s.clone()],
                 proof: t.nonce.clone(),
             },
             Cell {
                 label: format!("{}/Bash jq", t.label),
                 tool: "Bash",
                 call: format!("jq -r .nonce {}", sh(&t.file)),
-                marker: "jq".into(),
+                markers: vec!["jq".into(), file_s.clone()],
                 proof: t.nonce.clone(),
             },
             Cell {
                 label: format!("{}/Read", t.label),
                 tool: "Read",
                 call: format!(r#"{{"file_path": "{file}"}}"#),
-                marker: t.file_name(),
+                markers: vec![file_s.clone()],
                 proof: t.nonce.clone(),
             },
             // `Glob` and `Grep` are not in the CLI's tool list on 2.1.281 (`init.tools`);
@@ -410,14 +412,14 @@ fn cells(targets: &[Target], root: &std::path::Path, sibling: &std::path::Path) 
                 label: format!("{}/Bash find", t.label),
                 tool: "Bash",
                 call: format!("find {} -name '*.jsonl'", sh(&t.dir)),
-                marker: "find".into(),
+                markers: vec!["find".into(), dir_s.clone()],
                 proof: t.file_name(),
             },
             Cell {
                 label: format!("{}/Bash grep", t.label),
                 tool: "Bash",
                 call: format!("grep -r nonce {}", sh(&t.dir)),
-                marker: "grep".into(),
+                markers: vec!["grep".into(), dir_s.clone()],
                 proof: t.nonce.clone(),
             },
         ]);
@@ -564,8 +566,9 @@ fn probe_what_a_cli_reads_outside_its_workspace() {
                 _ => None,
             })
             .collect();
-        let on_script =
-            calls.len() == 1 && calls[0].1 == cell.tool && calls[0].2.contains(&cell.marker);
+        let on_script = calls.len() == 1
+            && calls[0].1 == cell.tool
+            && cell.markers.iter().all(|m| calls[0].2.contains(m.as_str()));
         let described: Vec<String> = calls
             .iter()
             .map(|(call, name, _)| {
