@@ -55,11 +55,13 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use stanchion_core::backend::claude_code::json::write_string;
 use stanchion_core::backend::claude_code::{ClaudeCode, ConfigRoot, Helper};
 use stanchion_core::backend::{
     AccountId, ConversationId, Event, EventSink, RunBackend, Start, TurnEnd, UserInput,
 };
 use stanchion_core::consent::policy::AlwaysAsk;
+use stanchion_core::consent::render::escape;
 use stanchion_core::consent::{Config, Consent};
 use stanchion_lib::assembly;
 use stanchion_lib::presenter::FailClosed;
@@ -356,6 +358,15 @@ fn dir_name(account: &str) -> String {
         .collect()
 }
 
+/// `word` as it appears inside a call's arguments, which the backend reports as the
+/// input's JSON, escaped for display: a path with a `\` or a non-ASCII byte in it is not
+/// there verbatim.
+fn as_in_arguments(word: &str) -> String {
+    let mut json = String::new();
+    write_string(word, &mut json);
+    escape(&json.as_bytes()[1..json.len() - 1])
+}
+
 /// A single-quoted shell word.
 fn sh(path: &std::path::Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
@@ -606,7 +617,10 @@ fn probe_what_a_cli_reads_outside_its_workspace() {
             .collect();
         let on_script = calls.len() == 1
             && calls[0].1 == cell.tool
-            && cell.markers.iter().all(|m| calls[0].2.contains(m.as_str()));
+            && cell
+                .markers
+                .iter()
+                .all(|m| calls[0].2.contains(&as_in_arguments(m)));
         let described: Vec<String> = calls
             .iter()
             .map(|(call, name, _)| {
