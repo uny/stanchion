@@ -338,6 +338,23 @@ fn unguessable() -> String {
     format!("{:016x}", std::hash::Hasher::finish(&h))
 }
 
+/// The account's directory name as the backend derives it (`dir_name` in
+/// `crates/core/src/backend/claude_code/mod.rs`): lowercase ASCII, digits, `-` and `_`
+/// kept, every other byte percent-encoded. Should the two drift, the probe's `is_dir`
+/// check fails rather than planting its "own" target where the CLI never looks.
+fn dir_name(account: &str) -> String {
+    account
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_' {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
 /// A single-quoted shell word.
 fn sh(path: &std::path::Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
@@ -486,7 +503,7 @@ fn probe_what_a_cli_reads_outside_its_workspace() {
     let backend = backend(&root);
     // Canonical, as the CLI sees them: `/var` is `/private/var` on macOS.
     let root = std::path::PathBuf::from(&root).canonicalize().unwrap();
-    let own = root.join(&account);
+    let own = root.join(dir_name(&account));
     assert!(own.is_dir(), "no account directory {}", own.display());
     let tmp = std::env::temp_dir().canonicalize().unwrap();
     let tag = format!("stanchion-probe-{}", std::process::id());
