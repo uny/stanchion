@@ -30,8 +30,9 @@
 //! file in the workspace, in the account's own config directory, in a sibling account
 //! directory it creates under the same root, or outside all three, and records whether
 //! the CLI ran it without asking, asked (and was refused, by the gate or at the helper's
-//! door), or refused it itself, and whether the result holds a name or nonce the prompt
-//! never stated. A call other than the one asked for is marked off script.
+//! door), or refused it itself — or that the turn left it undetermined — and whether the
+//! result holds a name or nonce the prompt never stated. A call other than the one asked
+//! for is marked off script.
 //!
 //! All three are ignored, and gated on an environment variable besides: they spawn the
 //! real binary, and the first and the probe need a signed-in config directory and spend
