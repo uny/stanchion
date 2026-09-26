@@ -53,11 +53,12 @@
 //! - On 2.1.281 (#67), with these spawn arguments and no allow rules in the account's
 //!   settings, a read-only call outside the workspace asks: `ls`, `cat`, `jq`, `find` and
 //!   `grep -r`, and the `Read` tool, aimed at the account's own config directory, at a
-//!   sibling account's, at the config root, or anywhere else outside the workspace, all
-//!   reached the helper; inside the workspace the same calls ran without asking. `Glob`
-//!   and `Grep` are not in `init`'s tool list on that version. A call to a tool the CLI
-//!   does not offer comes back as an error result and is in neither `permission_denials`
-//!   nor the asked set, so it is reported as [`Event::RanWithoutAsking`] though nothing ran.
+//!   sibling account's, or anywhere else outside the workspace, and `ls` of the config
+//!   root, all reached the helper; inside the workspace the same calls ran without
+//!   asking. `Glob` and `Grep` are not in `init`'s tool list on that version. A call to a
+//!   tool the CLI does not offer comes back as an error result and is in neither
+//!   `permission_denials` nor the asked set, so it is reported as
+//!   [`Event::RanWithoutAsking`] though nothing ran.
 //!
 //! # Runtime
 //!

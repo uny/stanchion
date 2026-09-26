@@ -908,9 +908,9 @@ spawn arguments the backend uses and no allow rules or hooks in the account's se
 fresh session per call, synthetic files, a name or nonce the prompt never stated as proof
 of a read). `ls`, `cat`, `jq`, `find` and `grep -r` through the shell, and the `Read` tool,
 ran without asking against the workspace, and asked — the gate for the shell, the helper's
-door for `Read` — against the account's own config directory, a sibling account's, the
-config root itself (named directly or as `$(dirname "$CLAUDE_CONFIG_DIR")`), and a
-directory outside all of them. `Glob` and `Grep` are not in the CLI's tool list on that
+door for `Read` — against the account's own config directory, a sibling account's, and a
+directory outside all of them; `ls` of the config root itself (named directly or as
+`$(dirname "$CLAUDE_CONFIG_DIR")`) asked too. `Glob` and `Grep` are not in the CLI's tool list on that
 version. So a read of another account's directory is a call the user is asked about, with
 the path in the dialog like any other; once allowed, it reads whatever it names. That is
 accepted: an account is its identity, endpoint, billing and credential owner (#45), not a
