@@ -40,7 +40,7 @@ export type ExitRef =
 
 export type EventRef =
   | { kind: "session_opened"; session: SessionRef }
-  | { kind: "turn_started"; turn: number }
+  | { kind: "turn_started"; turn: number; origin: "caller" | "backend" }
   | { kind: "message_partial"; turn: number; text: string }
   | { kind: "message_complete"; turn: number; message: { role: "user" | "assistant"; text: string } }
   | { kind: "tool_call"; turn: number; call: string; name: string; arguments: string }
@@ -65,7 +65,7 @@ export function describe(e: EventRef): string {
     case "session_opened":
       return `session ${e.session.value} (${e.session.backend}, ${e.session.account})`;
     case "turn_started":
-      return `turn ${e.turn} started`;
+      return e.origin === "backend" ? `turn ${e.turn} started by the backend` : `turn ${e.turn} started`;
     case "message_partial":
       return e.text;
     case "message_complete":

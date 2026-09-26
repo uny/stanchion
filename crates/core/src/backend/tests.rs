@@ -182,7 +182,10 @@ impl Session for CliSession {
                 None => {
                     let turn = self.lease.next_turn();
                     *open = Some(turn);
-                    self.events.event(Event::TurnStarted { turn });
+                    self.events.event(Event::TurnStarted {
+                        turn,
+                        origin: TurnOrigin::Caller,
+                    });
                     turn
                 }
             }
@@ -344,7 +347,10 @@ impl Session for NativeSession {
         }
         let turn = self.lease.next_turn();
         *self.turn.lock().unwrap() = Some(turn);
-        self.events.event(Event::TurnStarted { turn });
+        self.events.event(Event::TurnStarted {
+            turn,
+            origin: TurnOrigin::Caller,
+        });
         self.events.event(Event::MessagePartial {
             turn,
             text: "ok".into(),
@@ -679,7 +685,7 @@ fn turn_ids_are_unique_across_attachments() {
     let b = drive(&FakeCli);
     let turn = |d: &Driven| {
         d.events.iter().find_map(|e| match e {
-            Event::TurnStarted { turn } => Some(*turn),
+            Event::TurnStarted { turn, .. } => Some(*turn),
             _ => None,
         })
     };

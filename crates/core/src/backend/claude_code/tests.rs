@@ -227,7 +227,13 @@ fn one_turn_over_the_wire() {
             "TurnEnded",
         ]
     );
-    assert_eq!(got[0], Event::TurnStarted { turn });
+    assert_eq!(
+        got[0],
+        Event::TurnStarted {
+            turn,
+            origin: TurnOrigin::Caller
+        }
+    );
     let Event::SessionOpened { session: id } = &got[2] else {
         unreachable!()
     };
@@ -410,6 +416,20 @@ fn init_may_arrive_before_the_first_input() {
         matches!(e, Event::SessionOpened { .. })
     });
     assert_eq!(kinds(&got), ["Diagnostic", "SessionOpened"]);
+    // An `init` before any turn has ended is not a turn the CLI started (#63): the
+    // session is not left busy with a turn no `result` would close.
+    let turn = session.send(UserInput { text: "hi".into() }).unwrap();
+    let got = events.wait_for("TurnEnded", is_turn_ended);
+    assert_eq!(
+        got.iter()
+            .filter(|e| matches!(e, Event::TurnStarted { .. }))
+            .count(),
+        1
+    );
+    assert!(matches!(
+        got.last(),
+        Some(Event::TurnEnded { turn: t, end: TurnEnd::Completed }) if *t == turn
+    ));
     drop(session);
     let got = events.wait_for("Exited", is_exited);
     assert_eq!(exited(&got).unwrap().0, &Exit::Terminated);
@@ -1392,6 +1412,302 @@ fn a_request_outside_a_turn_is_denied() {
         "Diagnostic",
         |e| matches!(e, Event::Diagnostic { text } if text.contains("outside a turn")),
     );
+}
+
+/// The turn the CLI started on its own after `turn` (#63), once reported.
+fn backend_turn(events: &[Event], after: TurnId) -> Option<TurnId> {
+    events.iter().find_map(|e| match e {
+        Event::TurnStarted {
+            turn,
+            origin: TurnOrigin::Backend,
+        } if *turn != after => Some(*turn),
+        _ => None,
+    })
+}
+
+fn is_backend_turn_started(e: &Event) -> bool {
+    matches!(
+        e,
+        Event::TurnStarted {
+            origin: TurnOrigin::Backend,
+            ..
+        }
+    )
+}
+
+#[test]
+fn a_turn_the_cli_starts_is_reported_as_a_turn() {
+    let dirs = Dirs::new("unprompted");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs);
+    let session = start(&backend, &dirs, &events);
+
+    let turn = session
+        .send(UserInput {
+            text: "background".into(),
+        })
+        .unwrap();
+    let got = events.wait_for(
+        "the backend's TurnEnded",
+        |e| matches!(e, Event::TurnEnded { turn: t, .. } if *t != turn),
+    );
+    let theirs = backend_turn(&got, turn).unwrap();
+    let from = got.iter().position(is_backend_turn_started).unwrap();
+    assert!(matches!(
+        got[from - 1],
+        Event::TurnEnded { turn: t, end: TurnEnd::Completed } if t == turn
+    ));
+    assert_eq!(
+        kinds(&got[from..]),
+        [
+            "TurnStarted",
+            "Diagnostic", // init
+            "ToolCall",
+            "ToolCall",
+            "MessageComplete",
+            "ToolResult",
+            "ToolResult",
+            "Usage",
+            "RanWithoutAsking",
+            "RanWithoutAsking",
+            "TurnEnded",
+        ]
+    );
+    assert_eq!(
+        got[from + 4],
+        Event::MessageComplete {
+            turn: theirs,
+            message: Message {
+                role: Role::Assistant,
+                text: "background done".into(),
+            },
+        }
+    );
+    // Its calls are held to the same account as any turn's: neither asked, so both are
+    // reported as having run without asking, under the backend's turn.
+    let ran: Vec<(TurnId, &str)> = got
+        .iter()
+        .filter_map(|e| match e {
+            Event::RanWithoutAsking { turn, call, .. } => Some((*turn, call.0.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ran, [(theirs, "toolu_bg_ran"), (theirs, "toolu_bg_asked")]);
+    assert_eq!(
+        got.last(),
+        Some(&Event::TurnEnded {
+            turn: theirs,
+            end: TurnEnd::Completed
+        })
+    );
+    assert!(!got
+        .iter()
+        .any(|e| matches!(e, Event::Diagnostic { text } if text.contains("outside a turn"))));
+    // Its usage counts toward the attachment's.
+    assert!(matches!(
+        session.usage(),
+        Usage::Reported {
+            input_tokens: 6,
+            output_tokens: 4,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_call_in_a_turn_the_cli_starts_reaches_the_gate() {
+    let dirs = Dirs::new("unprompted-ask");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs).env(
+        "FAKE_CLAUDE_HOLD",
+        dirs.base.join("release").to_str().unwrap(),
+    );
+    let session = start_with(&backend, &dirs, &events, gate_with(Arc::new(Allows)));
+    let turn = session
+        .send(UserInput {
+            text: "background".into(),
+        })
+        .unwrap();
+    let got = events.wait_for(
+        "ToolCall",
+        |e| matches!(e, Event::ToolCall { call, .. } if call.0 == "toolu_bg_asked"),
+    );
+    let theirs = backend_turn(&got, turn).unwrap();
+
+    let reply = ask(
+        &socket_of(&dirs, session.as_ref()),
+        &bash_request("toolu_bg_asked", "echo after"),
+    );
+    assert_eq!(reply, r#"{"behavior":"allow"}"#);
+    let got = events.wait_for("ApprovalResolved", |e| {
+        matches!(e, Event::ApprovalResolved { .. })
+    });
+    assert!(got.iter().any(|e| matches!(
+        e,
+        Event::ApprovalRequested { turn: t, call, rendered, .. }
+            if *t == theirs && call.0 == "toolu_bg_asked" && rendered.body.contains("echo after")
+    )));
+    assert!(matches!(
+        got.last(),
+        Some(Event::ApprovalResolved { turn: t, allowed: true, .. }) if *t == theirs
+    ));
+
+    release(&dirs.base.join("release"));
+    let got = events.wait_for(
+        "the backend's TurnEnded",
+        |e| matches!(e, Event::TurnEnded { turn: t, .. } if *t == theirs),
+    );
+    let ran: Vec<&str> = got
+        .iter()
+        .filter_map(|e| match e {
+            Event::RanWithoutAsking { call, .. } => Some(call.0.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ran, ["toolu_bg_ran"]);
+}
+
+#[test]
+fn input_waits_for_a_turn_the_cli_starts() {
+    let dirs = Dirs::new("unprompted-busy");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs);
+    let session = start(&backend, &dirs, &events);
+    let turn = session
+        .send(UserInput {
+            text: "background-open".into(),
+        })
+        .unwrap();
+    let got = events.wait_for(
+        "ToolCall",
+        |e| matches!(e, Event::ToolCall { call, .. } if call.0 == "toolu_bg_cut"),
+    );
+    let theirs = backend_turn(&got, turn).unwrap();
+
+    assert_eq!(
+        session.send(UserInput {
+            text: "more".into()
+        }),
+        Err(BackendError::Busy)
+    );
+    session
+        .deliver(InboxMessage {
+            id: DeliveryId(9),
+            from: ConversationId(2),
+            text: "look at this".into(),
+        })
+        .unwrap();
+    assert!(!dirs.state().contains("look at this"));
+
+    // Interrupt reaches it as any turn; its cut call is not claimed to have run, and the
+    // held message then starts the next turn, the caller's.
+    session.interrupt().unwrap();
+    let got = events.wait_for("Delivery Accepted", |e| {
+        matches!(
+            e,
+            Event::Delivery {
+                state: Delivery::Accepted,
+                ..
+            }
+        )
+    });
+    let from = got
+        .iter()
+        .position(|e| {
+            e == &Event::TurnEnded {
+                turn: theirs,
+                end: TurnEnd::Interrupted,
+            }
+        })
+        .unwrap();
+    assert!(matches!(
+        got[from + 1],
+        Event::TurnStarted {
+            origin: TurnOrigin::Caller,
+            ..
+        }
+    ));
+    assert!(!got
+        .iter()
+        .any(|e| matches!(e, Event::RanWithoutAsking { turn: t, .. } if *t == theirs)));
+}
+
+#[test]
+fn a_turn_the_cli_starts_is_cut_by_its_end() {
+    let dirs = Dirs::new("unprompted-cut");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs);
+    let session = start(&backend, &dirs, &events);
+    let turn = session
+        .send(UserInput {
+            text: "background-open".into(),
+        })
+        .unwrap();
+    let got = events.wait_for(
+        "ToolCall",
+        |e| matches!(e, Event::ToolCall { call, .. } if call.0 == "toolu_bg_cut"),
+    );
+    let theirs = backend_turn(&got, turn).unwrap();
+    session.terminate().unwrap();
+    let got = events.wait_for("Exited", is_exited);
+    assert!(got.contains(&Event::TurnEnded {
+        turn: theirs,
+        end: TurnEnd::Cut
+    }));
+    assert_eq!(exited(&got).unwrap().0, &Exit::Terminated);
+}
+
+/// Records events, and holds the reading thread inside the first `TurnEnded` until
+/// released: lines the process wrote after it wait unread in the pipe.
+#[derive(Default)]
+struct Stalls {
+    inner: Recorder,
+    released: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl EventSink for Stalls {
+    fn event(&self, event: Event) {
+        let stall = is_turn_ended(&event);
+        self.inner.event(event);
+        if stall {
+            let mut released = self.released.lock().unwrap();
+            while !*released {
+                released = self.changed.wait(released).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn an_init_read_after_terminate_starts_no_turn() {
+    let dirs = Dirs::new("unprompted-late");
+    let events = Arc::new(Stalls::default());
+    let backend = backend(&dirs);
+    let session = backend
+        .start(Start {
+            conversation: ConversationId(1),
+            account: account(),
+            workspace_root: dirs.workspace.clone(),
+            gate: gate(),
+            events: events.clone(),
+        })
+        .unwrap();
+    session
+        .send(UserInput {
+            text: "background-open".into(),
+        })
+        .unwrap();
+    // The first turn's end is being delivered, and the fake has written the next turn's
+    // `init` behind it; the session is ended before the reader gets to it.
+    events.inner.wait_for("TurnEnded", is_turn_ended);
+    wait_until(|| dirs.state().contains("unprompted\n"));
+    session.terminate().unwrap();
+    *events.released.lock().unwrap() = true;
+    events.changed.notify_all();
+    let got = events.inner.wait_for("Exited", is_exited);
+    assert!(!got.iter().any(is_backend_turn_started), "{got:#?}");
+    assert_eq!(exited(&got).unwrap().0, &Exit::Terminated);
 }
 
 #[test]

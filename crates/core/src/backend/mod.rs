@@ -123,9 +123,11 @@ impl fmt::Display for SessionId {
     }
 }
 
-/// One turn: from an input the backend accepted to the point the backend reports the model
-/// has stopped, however it stopped. Core-issued from one counter for the process, so a turn
-/// id is unique across every attachment and conversation, not merely within one.
+/// One turn: from an input the backend accepted — or, on a backend that starts turns of its
+/// own, the point it started one ([`TurnOrigin::Backend`]) — to the point the backend
+/// reports the model has stopped, however it stopped. Core-issued from one counter for the
+/// process, so a turn id is unique across every attachment and conversation, not merely
+/// within one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TurnId(u64);
 
@@ -396,6 +398,17 @@ pub enum Role {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ToolCallId(pub String);
 
+/// What started a turn. For display: a turn's calls take the same approval path whichever
+/// started it, and nothing here widens or narrows what the gate is asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnOrigin {
+    /// [`Session::send`] or an inbox delivery [`Session::deliver`] accepted.
+    Caller,
+    /// The backend started it with no input from the caller: Claude Code does when a
+    /// background task it ran finishes (#63).
+    Backend,
+}
+
 /// How a turn ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TurnEnd {
@@ -440,6 +453,7 @@ pub enum Event {
     },
     TurnStarted {
         turn: TurnId,
+        origin: TurnOrigin,
     },
     /// A fragment of a message still being produced. `text` is a delta, appended to what
     /// came before it since the last [`Event::MessageComplete`] in the same turn.
