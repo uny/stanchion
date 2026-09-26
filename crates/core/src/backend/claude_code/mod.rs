@@ -50,6 +50,15 @@
 //!   `post_turn_summary`, `task_summary`, and a top-level `rate_limit_event` line beside
 //!   them. The ones that arrive several times a second say nothing a log needs, and are
 //!   dropped rather than turned into [`Event::Diagnostic`].
+//! - On 2.1.281 (#67), with these spawn arguments and no allow rules in the account's
+//!   settings, a read-only call outside the workspace asks: `ls`, `cat`, `jq`, `find` and
+//!   `grep -r`, and the `Read` tool, aimed at the account's own config directory, at a
+//!   sibling account's, or anywhere else outside the workspace, and `ls` of the config
+//!   root, all reached the helper; inside the workspace the same calls ran without
+//!   asking. `Glob` and `Grep` are not in `init`'s tool list on that version. A call to a
+//!   tool the CLI does not offer comes back as an error result and is in neither
+//!   `permission_denials` nor the asked set, so it is reported as
+//!   [`Event::RanWithoutAsking`] though nothing ran.
 //!
 //! # Runtime
 //!
