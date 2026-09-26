@@ -933,7 +933,8 @@ turn's do: a request reaches the gate with the command in the dialog, the `resul
 reconciled into `RanWithoutAsking`, interrupt and terminate reach it, and the caller's
 input waits for it (`Busy`, the inbox held). That widens what reaches the gate from a turn
 the user did not start, from refused at the door to asked, and it is the point of the
-change; the origin changes no gate decision. The dialog itself does not say which turn
+change; the origin changes no gate decision. That path is shown against the fake CLI; the
+real CLI asking from such a turn is not yet observed in the application. The dialog itself does not say which turn
 asked. Two orderings are accepted rather than solved. An approval request the socket
 thread takes before the reading thread has processed its turn's `init` is still denied at
 the door, which fails closed. And the stream carries nothing that ties a turn to the input

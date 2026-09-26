@@ -63,7 +63,8 @@
 //!   input: `init`, the model's messages and a `result` arrive between the caller's
 //!   turns. An `init` with no turn open, once a `result` has been seen on the attachment,
 //!   opens a turn marked [`TurnOrigin::Backend`], and its calls take the approval path any
-//!   turn's do (#63). What the stream does not carry is which input a turn answers: a
+//!   turn's do (#63) — shown against the fake CLI; whether the real CLI's requests in such
+//!   a turn reach the helper after its `init` is not yet observed. What the stream does not carry is which input a turn answers: a
 //!   turn the CLI starts just as an input is written is reported under the input's turn,
 //!   and an approval request taken before the reading thread has seen its `init` is
 //!   denied at the door (`docs/decisions.md`).
@@ -560,6 +561,7 @@ struct State {
     /// A `result` line has arrived on this attachment. Only after one does an `init` with
     /// no turn open start a turn of the CLI's own (#63): an `init` before any input — the
     /// contract allows one at startup — would otherwise open a turn no `result` closes.
+    /// Set by any `result`, one outside a turn included.
     seen_result: bool,
     /// Totals over the turns that reported usage; `None` until one has.
     totals: Option<(u64, u64, Option<u64>)>,
