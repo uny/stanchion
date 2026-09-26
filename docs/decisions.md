@@ -899,6 +899,29 @@ no command reads it. Both paths are escaped as any core-generated value is, so a
 character in either shows as `\u{..}` rather than as itself. Whether an expired OAuth
 session carries the same field is not measured.
 
+**An account separates credentials, not what the model can read (#67).** Every account's
+config directory is a 0700 directory owned by the one user the application runs as, so
+nothing in the filesystem keeps one account's CLI out of another's, transcripts included.
+What keeps it out is the approval path, and that was measured on `claude` 2.1.281 with the
+spawn arguments the backend uses and no allow rules or hooks in the account's settings
+(`probe_what_a_cli_reads_outside_its_workspace` in `src-tauri/tests/real_claude.rs`: one
+fresh session per call, synthetic files, a name or nonce the prompt never stated as proof
+of a read). `ls`, `cat`, `jq`, `find` and `grep -r` through the shell, and the `Read` tool,
+ran without asking against the workspace, and asked — the gate for the shell, the helper's
+door for `Read` — against the account's own config directory, a sibling account's, the
+config root itself (named directly or as `$(dirname "$CLAUDE_CONFIG_DIR")`), and a
+directory outside all of them. `Glob` and `Grep` are not in the CLI's tool list on that
+version. So a read of another account's directory is a call the user is asked about, with
+the path in the dialog like any other; once allowed, it reads whatever it names. That is
+accepted: an account is its identity, endpoint, billing and credential owner (#45), not a
+boundary on what a model can read on this machine. Confining a CLI to its workspace and its
+own directory — an OS sandbox around the whole process, or the CLI's own `--restricted` —
+is a separate change and is not made here. The approval guarantees do not change: these
+reads were already the CLI's rules to decide, and those rules ask; an allow rule added to
+an account's settings would widen them as it widens anything. The observation that opened
+#67, a fresh session listing its config directory and reading earlier transcripts without
+an approval, did not reproduce; whether an approval was given at the time is not known.
+
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that
 names either; a
@@ -906,4 +929,5 @@ capability read on the approval path; a backend that reports usage as zero when 
 reported it; a cost figure shown as a subscription's bill; a helper path or MCP
 configuration read from a settings file the model can reach; a second relay for the bridge;
 a terminate that ends the CLI and leaves the command it was running; a sign-in failure
-decided from the CLI's wording.
+decided from the CLI's wording; a statement that an account's config directory is private
+to that account's runs.
