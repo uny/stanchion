@@ -489,6 +489,18 @@ fn classify(seen: &[Event], call: &str) -> &'static str {
     "cli denied"
 }
 
+/// Removes what the probe planted when dropped, so a failed cell does not leave a
+/// sibling account directory under the real config root.
+struct Cleanup(Vec<std::path::PathBuf>);
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        for dir in &self.0 {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
 #[test]
 #[ignore = "spawns the real claude binary against a signed-in config directory"]
 fn probe_what_a_cli_reads_outside_its_workspace() {
@@ -511,6 +523,16 @@ fn probe_what_a_cli_reads_outside_its_workspace() {
     // Synthetic files only: the probe never points the model at a real transcript.
     let workspace = tmp.join(format!("{tag}-ws"));
     let sibling = root.join(format!("{tag}-b"));
+    let own_probe = own.join("projects").join(format!("-{tag}"));
+    let outside = tmp.join(format!("{tag}-outside"));
+    // The CLI's own record of these sessions stays in the account directory; only what
+    // the probe planted is removed, on a panic as much as at the end.
+    let _cleanup = Cleanup(vec![
+        workspace.clone(),
+        sibling.clone(),
+        own_probe.clone(),
+        outside.clone(),
+    ]);
     std::fs::create_dir_all(&sibling).unwrap();
     // The mode the core gives an account directory; the same user owns both.
     std::fs::set_permissions(
@@ -518,8 +540,6 @@ fn probe_what_a_cli_reads_outside_its_workspace() {
         std::os::unix::fs::PermissionsExt::from_mode(0o700),
     )
     .unwrap();
-    let own_probe = own.join("projects").join(format!("-{tag}"));
-    let outside = tmp.join(format!("{tag}-outside"));
     let targets = [
         Target::plant("workspace", workspace.join("notes")),
         Target::plant("own", own_probe.clone()),
@@ -644,11 +664,6 @@ fn probe_what_a_cli_reads_outside_its_workspace() {
     println!("\nprobe ({} cells):", rows.len());
     for row in &rows {
         println!("  {row}");
-    }
-    // The CLI's own record of these sessions stays in the account directory; only what
-    // the probe planted is removed.
-    for dir in [&workspace, &sibling, &own_probe, &outside] {
-        let _ = std::fs::remove_dir_all(dir);
     }
     assert!(stalled.is_empty(), "no turn end within 180 s: {stalled:?}");
 }
