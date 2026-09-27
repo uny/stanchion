@@ -946,6 +946,29 @@ turn is reported under the input's turn id, and each later turn under the id bef
 until no input is waiting; the approvals themselves are unaffected, since each call is
 asked about by its own command.
 
+**A call to a tool the CLI does not offer is still reported as run (#75).** When the model
+calls a tool the CLI does not have, the CLI answers with an error `tool_result` and runs
+nothing, yet the call is in neither `permission_denials` nor the asked set, so the
+reconciliation reports it as `RanWithoutAsking`. The fix that suggests itself — pass over a
+call whose name is not in `init.tools` and whose result is an error — was measured against
+`claude` 2.1.281 with the spawn arguments the backend uses, and `init.tools` is not the set
+of names a call can carry: a subagent the model launched under the name `Agent` ran while
+`init.tools` listed `Task` and not `Agent`; the approval helper's `mcp__stanchion__approve`
+is absent though its server reports `connected`; and the list itself changes with
+`--permission-prompt-tool`. Passing over a call on its name would drop one that ran and
+then failed, which is the direction an audit record must not fail in. What would tell a
+refusal apart is the CLI's own wording, and that was not observed: asked, one fresh session
+each, to call `Glob` or `Grep`, both the default model and `claude-haiku-4-5-20251001`
+declined to make the call. The 2.1.281 binary carries the text
+`<tool_use_error>Error: No such tool available: ` beside `</tool_use_error>`, but whether a
+result on the stream carries it in that form is not known — the `Read` tool's error result
+arrived without the tags. So the misreport stays, on the side of reporting. Once a result
+of that shape is seen on the stream, a call is to be classed as not run only when its
+result is an error, its text is that refusal naming the call's own tool, and that name is
+absent from its turn's `init.tools`; its `ToolCall` and `ToolResult` events stay as they
+are. Calls a subagent makes arrive on the stream with `parent_tool_use_id` set and are
+reconciled with the turn's own.
+
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that
 names either; a
