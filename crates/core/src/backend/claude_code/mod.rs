@@ -58,7 +58,12 @@
 //!   asking. `Glob` and `Grep` are not in `init`'s tool list on that version. A call to a
 //!   tool the CLI does not offer comes back as an error result and is in neither
 //!   `permission_denials` nor the asked set, so it is reported as
-//!   [`Event::RanWithoutAsking`] though nothing ran.
+//!   [`Event::RanWithoutAsking`] though nothing ran. That stays (#75): `init.tools` is not
+//!   the set of names a call can carry — a subagent launched as `Agent` ran while the
+//!   list named `Task`, and the helper's own tool is not in it — so a call is not passed
+//!   over on its name, and the CLI's refusal has not been seen on the stream to match on.
+//!   A subagent's calls arrive with `parent_tool_use_id` set and are reconciled with the
+//!   turn's own.
 //! - On 2.1.280 (#46), when a background task finishes the CLI starts a turn with no
 //!   input: `init`, the model's messages and a `result` arrive between the caller's
 //!   turns. An `init` with no turn open, once a `result` has been seen on the attachment,
