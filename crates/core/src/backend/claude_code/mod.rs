@@ -904,10 +904,11 @@ impl Shared {
     /// `uuid` (#73). Measured on 2.1.281: `queued` as it is read, `started` just before
     /// the `init` of the turn it begins — or with no `init`, when it is taken into a turn
     /// already inside a call — and `completed` or `cancelled` once that turn is over.
-    /// Only `started` and `cancelled` change anything: a `cancelled` while the input is
-    /// still on the wire — before any `started`, or after one with no `init` — means it
-    /// will begin no turn, neither seen on 2.1.281. A line about an input already resolved
-    /// is the tail of a turn reported elsewhere.
+    /// Only a line about the input still on the wire changes anything: `started`, or a
+    /// `cancelled` or `completed` before its turn was seen to begin — before any
+    /// `started`, or after one with no `init` — which ends its id `Failed`, none of them
+    /// seen on 2.1.281. A line about an input already resolved is the tail of a turn
+    /// reported elsewhere.
     fn on_lifecycle(&self, state: &mut State, out: &mut Vec<Event>, value: &Value) {
         let uuid = value.get("command_uuid").and_then(Value::as_str);
         let Some(written) = state.written.as_mut() else {
@@ -933,14 +934,22 @@ impl Shared {
                 }
                 None => written.started = true,
             },
-            Some("cancelled") => {
+            // `completed` for an input still on the wire is a turn this backend did not
+            // see begin — never seen on 2.1.281, where `started` precedes every `init` —
+            // and resolving it is what keeps the session from staying `Busy`.
+            Some(end @ ("cancelled" | "completed")) => {
                 let turn = written.turn;
                 state.written = None;
+                let detail = if end == "cancelled" {
+                    "the CLI dropped the input before it began a turn"
+                } else {
+                    "the CLI finished the input without a turn seen to begin"
+                };
                 Self::resolve_unbegun(
                     out,
                     turn,
                     TurnEnd::Failed {
-                        detail: "the CLI dropped the input before it began a turn".into(),
+                        detail: detail.into(),
                     },
                 );
                 self.flush_queue(state, out);

@@ -32,8 +32,8 @@
 #   `cancelled`, after an error) after its `result`. A turn the fake starts itself has
 #   none. Inputs whose text is `race` or `join` replay what 2.1.281 does with an input
 #   that arrives as the CLI starts a turn of its own; `drop` and `stall` leave an input
-#   that never begins a turn, and `late` holds its `init` back on FAKE_CLAUDE_HOLD
-#   (below).
+#   that never begins a turn, `unannounced` begins one with no `started`, and `late`
+#   holds its `init` back on FAKE_CLAUDE_HOLD (below).
 #   FAKE_CLAUDE_ASK=1          on the default turn, ask about `toolu_denied` the way the
 #                              real CLI does: spawn the helper named in --mcp-config, drive
 #                              the MCP handshake and one tools/call, and act on the reply
@@ -201,6 +201,17 @@ while IFS= read -r line; do
           init_done=0
           emit_init
           printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"tool_use","id":"toolu_late","name":"Bash","input":{"command":"sleep 600"}}]}}'
+          continue
+          ;;
+        *'"text":"unannounced"'*)
+          # A turn with no `started` before its `init`: not seen on the real CLI, which
+          # the backend must still survive.
+          lifecycle "$uuid" queued
+          current=$uuid
+          init_done=0
+          emit_init
+          printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"text","text":"unseen"}]}}'
+          emit_result "$ok"
           continue
           ;;
         *'"text":"drop"'*)

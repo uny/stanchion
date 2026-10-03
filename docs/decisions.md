@@ -966,8 +966,8 @@ input's turn follows it. An input taken into a turn already open is resolved at 
 `TurnStarted` for its id and `TurnEnded` with `TurnEnd::Joined { into }`, and what the
 model did with it stays under `into`, since one turn cannot be split on the stream; every
 id `send` returns still gets one `TurnStarted` and one `TurnEnded`. A `cancelled` before
-any `started`, not observed, ends the id `Failed`; an input still waiting when the
-attachment ends is `Cut`. A CLI whose `init` does not list the capability is read as #63
+any `started`, or a `completed` for an input whose turn was not seen to begin, neither
+observed, ends the id `Failed`; an input still waiting when the attachment ends is `Cut`. A CLI whose `init` does not list the capability is read as #63
 read it. Two things move: a caller's `TurnStarted` arrives with its `init` rather than at
 the write — an inbox message is `Accepted` before its turn starts — and turn ids no longer
 follow the order turns start in. An interrupt while the input is on the wire is held and

@@ -1810,6 +1810,31 @@ fn an_input_dropped_before_it_begins_fails_and_frees_the_session() {
 }
 
 #[test]
+fn an_input_begun_with_no_started_fails_and_frees_the_session() {
+    let dirs = Dirs::new("unannounced");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs);
+    let session = start(&backend, &dirs, &events);
+    let mine = session
+        .send(UserInput {
+            text: "unannounced".into(),
+        })
+        .unwrap();
+    let got = events.wait_for(
+        "TurnEnded",
+        |e| matches!(e, Event::TurnEnded { turn, .. } if *turn == mine),
+    );
+    assert!(matches!(
+        got.last(),
+        Some(Event::TurnEnded {
+            end: TurnEnd::Failed { .. },
+            ..
+        })
+    ));
+    finished_turn(session.as_ref(), &events);
+}
+
+#[test]
 fn an_interrupt_before_the_turn_begins_cuts_it_as_it_begins() {
     let dirs = Dirs::new("late");
     let events = Arc::new(Recorder::default());
