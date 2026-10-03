@@ -990,7 +990,9 @@ read for it. It reaches the gate as `TurnStarter` on the CLI request, the one fi
 `Class` that is neither what runs nor what the model or the user chose, and nothing but what is
 shown depends on it: no policy, token or reply. It does change what is shown, so it counts
 toward the presenter's capacity, and it counts for a caller's turn as well, so the same
-request fits or is refused whoever started its turn. The suffix holds an em dash, which the escape
+request is within capacity or over it whoever started its turn. A native dialog that lays
+the title out and finds it too tall (`DoesNotFit`) measures what it shows, which the core
+cannot, so at that edge the longer title can still not fit. The suffix holds an em dash, which the escape
 never lets through, so no model-supplied value can show it. Two readings are inherited, not
 added: an input taken into the CLI's turn (`Joined`) leaves that turn the backend's, so a
 call the model makes in answer to the input still says the backend started it, which is
