@@ -18,7 +18,7 @@ use crate::consent::policy::AlwaysAsk;
 use crate::consent::presenter::{
     Answer, ConsentPresenter, Handle, PresenterError, Rendered, Responder,
 };
-use crate::consent::request::{ClassSpec, RequestSpec};
+use crate::consent::request::{ClassSpec, RequestSpec, TurnStarter};
 use crate::consent::Config;
 use crate::execute::{CliApproval, Reply, ReplyTransport};
 
@@ -218,6 +218,7 @@ impl Session for CliSession {
                 command: "ls".into(),
                 cwd: self.workspace_root.clone(),
                 session_grant: false,
+                turn: TurnStarter::Caller,
             },
         };
         let _ = CliApproval.resolve(self.lease.gate(), spec, &mut Replies(self));
@@ -719,6 +720,7 @@ fn the_lease_ends_the_consent_run_on_terminate_and_on_drop() {
                     command: "ls".into(),
                     cwd: ws(),
                     session_grant: false,
+                    turn: TurnStarter::Caller,
                 },
             })
             .err()

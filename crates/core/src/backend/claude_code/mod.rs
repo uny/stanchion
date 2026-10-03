@@ -553,6 +553,8 @@ impl RunBackend for ClaudeCode {
 
 struct OpenTurn {
     id: TurnId,
+    /// Who started it, as `TurnStarted` reported. The approval dialog says so (#78).
+    origin: TurnOrigin,
     /// Calls the CLI reported this turn, reconciled against the `result` line's
     /// `permission_denials` to tell what ran from what its own rules refused.
     calls: Vec<(ToolCallId, String, String)>,
@@ -708,6 +710,7 @@ impl Shared {
     ) {
         state.turn = Some(OpenTurn {
             id: turn,
+            origin,
             calls: Vec::new(),
             asked: Asked::new(),
             pending: Vec::new(),
