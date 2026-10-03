@@ -120,7 +120,7 @@ pub struct InlineProfile {
 /// Every variant carries the whole of what will run or be stored: for settings the old
 /// value as well as the new one, for a write the bytes themselves and not only their hash.
 /// The one field that is neither is [`TurnStarter`] on a delegated CLI request, which the
-/// dialog shows and nothing else reads.
+/// dialog shows and no decision depends on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Class {
     /// A shell command on the native backend. `command` is the exact string the executor

@@ -1336,27 +1336,33 @@ fn no_value_the_model_supplies_can_show_the_backend_turn_suffix() {
 }
 
 #[test]
-fn the_backend_turn_suffix_counts_toward_the_presenters_capacity() {
-    // The origin changes what is shown, and so what is measured: a request that fits from
-    // the caller's turn can be over capacity from the backend's, and is refused as any
-    // other request that does not fit. No other decision reads it.
+fn whether_a_request_fits_does_not_depend_on_who_started_its_turn() {
+    // The suffix is shown, so it counts toward the capacity; and it counts for a caller's
+    // turn too, so the same request fits, or is refused, from either turn.
     let ws = Workspace::new();
     let probe = FakePresenter::new(Mode::Allow);
     let probe_gate = gate(&probe);
     let run = probe_gate.register_run(Backend::ClaudeCode);
     probe_gate
-        .ask(cli_spec(run, ws.path(), "ls", TurnStarter::Caller))
+        .ask(cli_spec(run, ws.path(), "ls", TurnStarter::Backend))
         .unwrap();
     let fits = probe.shown()[0].shown_len();
 
     let presenter = FakePresenter::with_capacity(Mode::Allow, fits);
+    let roomy = gate(&presenter);
+    let run = roomy.register_run(Backend::ClaudeCode);
+    for turn in [TurnStarter::Caller, TurnStarter::Backend] {
+        assert!(roomy.ask(cli_spec(run, ws.path(), "ls", turn)).is_ok());
+    }
+
+    let presenter = FakePresenter::with_capacity(Mode::Allow, fits - 1);
     let gate = gate(&presenter);
     let run = gate.register_run(Backend::ClaudeCode);
-    assert!(gate
-        .ask(cli_spec(run, ws.path(), "ls", TurnStarter::Caller))
-        .is_ok());
-    assert!(matches!(
-        gate.ask(cli_spec(run, ws.path(), "ls", TurnStarter::Backend)),
-        Err(Refusal::OverCapacity { bytes, capacity }) if bytes == fits + BACKEND_TURN.len() && capacity == fits
-    ));
+    for turn in [TurnStarter::Caller, TurnStarter::Backend] {
+        assert!(matches!(
+            gate.ask(cli_spec(run, ws.path(), "ls", turn)),
+            Err(Refusal::OverCapacity { bytes, capacity }) if bytes == fits && capacity == fits - 1
+        ));
+    }
+    assert!(presenter.shown().is_empty());
 }

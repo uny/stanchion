@@ -209,7 +209,7 @@ impl Consent {
 
         let rendered = render(&request);
         let capacity = self.presenter.capacity();
-        let bytes = rendered.shown_len();
+        let bytes = rendered.shown_len() + unshown_turn_suffix(&request);
         if bytes > capacity {
             return Err(Refusal::OverCapacity { bytes, capacity });
         }
@@ -673,6 +673,19 @@ pub fn render(request: &Request) -> Rendered {
         parsed,
         negative: NEGATIVE,
         affirmative: AFFIRMATIVE,
+    }
+}
+
+/// The bytes of [`BACKEND_TURN`] a CLI request from a caller's turn does not show. They
+/// count toward the presenter's capacity all the same, so whether a request fits does not
+/// depend on who started its turn (#78): the origin is shown, never decided on.
+fn unshown_turn_suffix(request: &Request) -> usize {
+    match request.class {
+        Class::CliCommand {
+            turn: TurnStarter::Caller,
+            ..
+        } => BACKEND_TURN.len(),
+        _ => 0,
     }
 }
 

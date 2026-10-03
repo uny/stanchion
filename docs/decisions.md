@@ -987,10 +987,10 @@ and "you" would be wrong for the second. The origin is the one `TurnStarted` rep
 recorded on the open turn and read under the same lock as the turn id a request is tied to,
 so a request cannot carry one turn's id and another's origin; nothing in the request line is
 read for it. It reaches the gate as `TurnStarter` on the CLI request, the one field of a
-`Class` that is neither what runs nor what the model or the user chose, and nothing but the
-render reads it: no policy, token or reply. It does change what is shown, so it counts
-toward the presenter's capacity, and a request that fits from a caller's turn can be
-refused as not fitting from the backend's. The suffix holds an em dash, which the escape
+`Class` that is neither what runs nor what the model or the user chose, and nothing but what is
+shown depends on it: no policy, token or reply. It does change what is shown, so it counts
+toward the presenter's capacity, and it counts for a caller's turn as well, so the same
+request fits or is refused whoever started its turn. The suffix holds an em dash, which the escape
 never lets through, so no model-supplied value can show it. Two readings are inherited, not
 added: an input taken into the CLI's turn (`Joined`) leaves that turn the backend's, so a
 call the model makes in answer to the input still says the backend started it, which is
