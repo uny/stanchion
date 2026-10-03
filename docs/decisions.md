@@ -970,10 +970,14 @@ any `started`, not observed, ends the id `Failed`; an input still waiting when t
 attachment ends is `Cut`. A CLI whose `init` does not list the capability is read as #63
 read it. Two things move: a caller's `TurnStarted` arrives with its `init` rather than at
 the write — an inbox message is `Accepted` before its turn starts — and turn ids no longer
-follow the order turns start in. Approvals are unchanged: a request is tied to the turn
-open when it arrives and refused at the door with none, as before; nothing new is reachable
-from the WebView. The race itself was not caught on the real CLI — the input won each
-time — and is replayed by the fake CLI from the orders that were.
+follow the order turns start in. An interrupt while the input is on the wire is held and
+sent as its turn begins, since one the CLI reads first leaves the input queued. Approvals
+are tied as before to the turn open when a request arrives and refused at the door with
+none, so the ordering #63 accepted — a request taken before the reading thread has
+processed its turn's `init` — now covers a caller's turn too, which before opened at the
+write; it still fails closed. Nothing new is reachable from the WebView. The race itself
+was not caught on the real CLI — the input won each time — and is replayed by the fake CLI
+from the orders that were.
 
 **A call to a tool the CLI does not offer is still reported as run (#75).** When the model
 calls a tool the CLI does not have, the CLI answers with an error `tool_result` and runs

@@ -572,6 +572,9 @@ struct Written {
     turn: TurnId,
     /// `started` arrived with no turn open: the next `init` opens this input's turn.
     started: bool,
+    /// [`Session::interrupt`] was called before its turn began: the turn is cut as it
+    /// begins.
+    interrupt: bool,
 }
 
 struct State {
@@ -677,6 +680,7 @@ impl Shared {
             uuid,
             turn,
             started: false,
+            interrupt: false,
         });
         Ok(turn)
     }
@@ -711,6 +715,30 @@ impl Shared {
             not_signed_in: false,
         });
         out.push(Event::TurnStarted { turn, origin });
+    }
+
+    /// Asks the CLI to cut the open turn, once. Flagged only once the request is on the
+    /// wire: a failed write leaves the turn as it was, so its end is not misreported and a
+    /// retry can send again.
+    fn interrupt_open(&self, state: &mut State) -> Result<(), BackendError> {
+        let Some(turn) = state.turn.as_mut() else {
+            return Ok(());
+        };
+        if !turn.interrupting {
+            self.write_line(&interrupt_line(turn.id.0))?;
+            turn.interrupting = true;
+        }
+        Ok(())
+    }
+
+    /// Sends the interrupt [`Session::interrupt`] left for an input whose turn had not
+    /// begun, now that the turn it is in has. A failed write goes to the log.
+    fn interrupt_deferred(&self, state: &mut State, out: &mut Vec<Event>) {
+        if let Err(e) = self.interrupt_open(state) {
+            out.push(Event::Diagnostic {
+                text: format!("interrupt not sent: {e}"),
+            });
+        }
     }
 
     /// Reports the turn of an input that never began one: issued, so it is started and
@@ -824,6 +852,9 @@ impl Shared {
             if theirs {
                 let written = state.written.take().expect("checked");
                 self.open_turn_as(state, out, written.turn, TurnOrigin::Caller);
+                if written.interrupt {
+                    self.interrupt_deferred(state, out);
+                }
             } else if state.seen_result {
                 self.open_turn(state, out, TurnOrigin::Backend);
             }
@@ -893,8 +924,12 @@ impl Shared {
                 Some(open) => {
                     let into = open.id;
                     let turn = written.turn;
+                    let interrupt = written.interrupt;
                     state.written = None;
                     Self::resolve_unbegun(out, turn, TurnEnd::Joined { into });
+                    if interrupt {
+                        self.interrupt_deferred(state, out);
+                    }
                 }
                 None => written.started = true,
             },
@@ -1419,18 +1454,15 @@ impl Session for ClaudeSession {
     fn interrupt(&self) -> Result<(), BackendError> {
         let _emit = self.shared.emit.lock().unwrap();
         let mut state = self.shared.checked()?;
-        // Nothing to cut while an input waits behind a turn that has ended: measured on
+        // An input whose turn has not begun is cut as it begins, not now: measured on
         // 2.1.281, the control request leaves a queued input queued, and its turn runs.
-        let Some(turn) = state.turn.as_mut() else {
+        if state.turn.is_none() {
+            if let Some(written) = state.written.as_mut() {
+                written.interrupt = true;
+            }
             return Ok(());
-        };
-        if !turn.interrupting {
-            // Flagged only once the request is on the wire: a failed write leaves the
-            // turn as it was, so its end is not misreported and a retry can send again.
-            self.shared.write_line(&interrupt_line(turn.id.0))?;
-            turn.interrupting = true;
         }
-        Ok(())
+        self.shared.interrupt_open(&mut state)
     }
 
     fn terminate(&self) -> Result<(), BackendError> {

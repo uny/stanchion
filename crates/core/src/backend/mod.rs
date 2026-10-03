@@ -648,7 +648,8 @@ pub trait Session: sealed::Sealed + Send + Sync {
     fn deliver(&self, message: InboxMessage) -> Result<(), BackendError>;
 
     /// Cuts the turn in progress. What a later resume does with the cut turn is
-    /// [`Capabilities::after_interrupt`]. A no-op when no turn is in progress.
+    /// [`Capabilities::after_interrupt`]. An input already written whose turn has
+    /// not begun is cut as it begins. A no-op when neither is in progress.
     fn interrupt(&self) -> Result<(), BackendError>;
 
     /// Ends the attachment. Idempotent, and `Ok` once the request to end has been made;

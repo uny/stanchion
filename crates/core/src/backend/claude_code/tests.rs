@@ -1810,6 +1810,37 @@ fn an_input_dropped_before_it_begins_fails_and_frees_the_session() {
 }
 
 #[test]
+fn an_interrupt_before_the_turn_begins_cuts_it_as_it_begins() {
+    let dirs = Dirs::new("late");
+    let events = Arc::new(Recorder::default());
+    let hold = dirs.base.join("release");
+    let backend = backend(&dirs).env("FAKE_CLAUDE_HOLD", hold.to_str().unwrap());
+    let session = start(&backend, &dirs, &events);
+    let mine = session
+        .send(UserInput {
+            text: "late".into(),
+        })
+        .unwrap();
+    // The CLI has not begun it: nothing is cut yet, and nothing is sent.
+    session.interrupt().unwrap();
+    assert!(!dirs.state().contains("interrupt"));
+    release(&hold);
+    let got = events.wait_for(
+        "TurnEnded",
+        |e| matches!(e, Event::TurnEnded { turn, .. } if *turn == mine),
+    );
+    assert_eq!(
+        got.last(),
+        Some(&Event::TurnEnded {
+            turn: mine,
+            end: TurnEnd::Interrupted
+        })
+    );
+    assert!(dirs.state().contains("interrupt"));
+    finished_turn(session.as_ref(), &events);
+}
+
+#[test]
 fn an_input_that_never_begins_is_busy_and_cut_by_the_end() {
     let dirs = Dirs::new("stall");
     let events = Arc::new(Recorder::default());

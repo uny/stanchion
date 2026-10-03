@@ -32,7 +32,8 @@
 #   `cancelled`, after an error) after its `result`. A turn the fake starts itself has
 #   none. Inputs whose text is `race` or `join` replay what 2.1.281 does with an input
 #   that arrives as the CLI starts a turn of its own; `drop` and `stall` leave an input
-#   that never begins a turn (below).
+#   that never begins a turn, and `late` holds its `init` back on FAKE_CLAUDE_HOLD
+#   (below).
 #   FAKE_CLAUDE_ASK=1          on the default turn, ask about `toolu_denied` the way the
 #                              real CLI does: spawn the helper named in --mcp-config, drive
 #                              the MCP handshake and one tools/call, and act on the reply
@@ -184,6 +185,22 @@ while IFS= read -r line; do
         *'"text":"stall"'*)
           # Read and never begun.
           lifecycle "$uuid" queued
+          continue
+          ;;
+        *'"text":"late"'*)
+          # Begun, and its `init` held back until FAKE_CLAUDE_HOLD exists; then a turn
+          # that stays open with a call in flight, as `wait`.
+          lifecycle "$uuid" queued
+          lifecycle "$uuid" started
+          current=$uuid
+          i=0
+          while [ ! -e "${FAKE_CLAUDE_HOLD:?}" ] && [ "$i" -lt 500 ]; do
+            sleep 0.02
+            i=$((i + 1))
+          done
+          init_done=0
+          emit_init
+          printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"tool_use","id":"toolu_late","name":"Bash","input":{"command":"sleep 600"}}]}}'
           continue
           ;;
         *'"text":"drop"'*)
