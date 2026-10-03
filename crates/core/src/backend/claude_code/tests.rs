@@ -1882,8 +1882,17 @@ fn an_input_that_never_begins_is_busy_and_cut_by_the_end() {
         }),
         Err(BackendError::Busy)
     );
+    // The inbox waits for it too.
+    session
+        .deliver(InboxMessage {
+            id: DeliveryId(3),
+            from: ConversationId(2),
+            text: "look at this".into(),
+        })
+        .unwrap();
     session.terminate().unwrap();
     let got = events.wait_for("Exited", is_exited);
+    assert!(!dirs.state().contains("look at this"));
     let n = got.len();
     assert_eq!(
         got[n - 3..n - 1],
@@ -1930,6 +1939,8 @@ fn every_input_is_named_afresh() {
     let a = input_uuid(1, 1);
     let b = input_uuid(1, 2);
     assert_ne!(a, b);
+    // Not a function of its arguments alone: a later process numbers its inputs afresh.
+    assert_ne!(a, input_uuid(1, 1));
     for u in [&a, &b] {
         let parts: Vec<&str> = u.split('-').collect();
         assert_eq!(

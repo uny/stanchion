@@ -33,7 +33,8 @@
 #   none. Inputs whose text is `race` or `join` replay what 2.1.281 does with an input
 #   that arrives as the CLI starts a turn of its own; `drop` and `stall` leave an input
 #   that never begins a turn, `unannounced` begins one with no `started`, and `late`
-#   holds its `init` back on FAKE_CLAUDE_HOLD (below).
+#   holds its `init` back on FAKE_CLAUDE_HOLD (below). An interrupt ends the input's turn
+#   `cancelled`, as decisions.md records for 2.1.281.
 #   FAKE_CLAUDE_ASK=1          on the default turn, ask about `toolu_denied` the way the
 #                              real CLI does: spawn the helper named in --mcp-config, drive
 #                              the MCP handshake and one tools/call, and act on the reply
@@ -91,11 +92,12 @@ lifecycle() {
   fi
 }
 
+# `$1` the result line; `$2`, when given, the input's terminal lifecycle state.
 emit_result() {
   turns=$((turns + 1))
   printf '%s\n' "$1"
-  case "$1" in
-    *'"is_error":true'*) lifecycle "$current" cancelled ;;
+  case "${2:-}:$1" in
+    cancelled:* | *'"is_error":true'*) lifecycle "$current" cancelled ;;
     *) lifecycle "$current" completed ;;
   esac
   current=""
@@ -144,7 +146,7 @@ while IFS= read -r line; do
     *'"subtype":"interrupt"'*)
       note "interrupt"
       printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"1"}}'
-      emit_result '{"type":"result","subtype":"success","is_error":false,"session_id":"'"$SESSION"'","total_cost_usd":0.001,"usage":{"input_tokens":3,"output_tokens":1},"permission_denials":[]}'
+      emit_result '{"type":"result","subtype":"success","is_error":false,"session_id":"'"$SESSION"'","total_cost_usd":0.001,"usage":{"input_tokens":3,"output_tokens":1},"permission_denials":[]}' cancelled
       ;;
     *'"type":"user"'*)
       note "user:$line"
@@ -177,8 +179,8 @@ while IFS= read -r line; do
           lifecycle "$uuid" queued
           printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_join","content":"","is_error":false}]}}'
           lifecycle "$uuid" started
+          current=$uuid
           printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"text","text":"joined"}]}}'
-          lifecycle "$uuid" completed
           emit_result "$ok"
           continue
           ;;
