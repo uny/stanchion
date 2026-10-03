@@ -35,6 +35,8 @@
 #   that never begins a turn, `unannounced` begins one with no `started`, and `late`
 #   holds its `init` back on FAKE_CLAUDE_HOLD (below). An interrupt ends the input's turn
 #   `cancelled`, as decisions.md records for 2.1.281.
+#   FAKE_CLAUDE_JOIN_HOLD=path on `join`, after taking the input in, call `toolu_join_asked`
+#                              and wait until `path` exists (the default turn is not held)
 #   FAKE_CLAUDE_ASK=1          on the default turn, ask about `toolu_denied` the way the
 #                              real CLI does: spawn the helper named in --mcp-config, drive
 #                              the MCP handshake and one tools/call, and act on the reply
@@ -181,6 +183,16 @@ while IFS= read -r line; do
           lifecycle "$uuid" started
           current=$uuid
           printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"text","text":"joined"}]}}'
+          if [ -n "${FAKE_CLAUDE_JOIN_HOLD:-}" ]; then
+            # A call made after the input was taken in, still in the CLI's own turn.
+            printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"tool_use","id":"toolu_join_asked","name":"Bash","input":{"command":"touch joined"}}]}}'
+            i=0
+            while [ ! -e "$FAKE_CLAUDE_JOIN_HOLD" ] && [ "$i" -lt 500 ]; do
+              sleep 0.02
+              i=$((i + 1))
+            done
+            printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_join_asked","content":"","is_error":false}]}}'
+          fi
           emit_result "$ok"
           continue
           ;;

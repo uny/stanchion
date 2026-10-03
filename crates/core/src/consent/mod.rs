@@ -26,13 +26,18 @@ use policy::{Policy, Refusal, Tier};
 use presenter::{Answer, ConsentPresenter, Handle, Outcome, Rendered, Responder};
 use request::{
     Backend, Binding, Class, ClassSpec, InvocationId, Prior, Request, RequestSpec, RunId,
-    Sha256Digest,
+    Sha256Digest, TurnStarter,
 };
 use token::{Approved, ConsentToken, Origin, TokenId};
 
 /// The captions on the two buttons. Negative first, everywhere.
 pub const NEGATIVE: &str = "Deny";
 pub const AFFIRMATIVE: &str = "Allow";
+
+/// What a CLI request's title ends with when the backend started its turn (#78). It holds a
+/// character outside printable ASCII, which `escape` and `escape_inline` never let through,
+/// so no model-supplied value can show it: only the backend's turn bookkeeping can.
+pub const BACKEND_TURN: &str = " \u{2014} in a turn the backend started on its own";
 
 /// Tunables. The defaults are what the application runs with; tests narrow them.
 #[derive(Clone, Debug)]
@@ -469,10 +474,12 @@ impl Consent {
                 command,
                 cwd,
                 session_grant: false,
+                turn,
             } => Class::CliCommand {
                 cli_request_id,
                 command,
                 cwd: resolve_against(&spec.workspace_root, cwd),
+                turn,
             },
             ClassSpec::BridgeForward { tool, arguments } => {
                 Class::BridgeForward { tool, arguments }
@@ -594,7 +601,14 @@ pub fn render(request: &Request) -> Rendered {
         Binding::Run { id, backend } => format!("{id} ({})", backend.label()),
         Binding::Application => "application".to_string(),
     };
-    let title = format!("{who} \u{2014} {}", request.class.label());
+    let mut title = format!("{who} \u{2014} {}", request.class.label());
+    if let Class::CliCommand {
+        turn: TurnStarter::Backend,
+        ..
+    } = request.class
+    {
+        title.push_str(BACKEND_TURN);
+    }
 
     let mut lines: Vec<String> = Vec::new();
     let mut parsed: Vec<(String, String)> = Vec::new();

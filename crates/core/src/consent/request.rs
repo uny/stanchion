@@ -119,6 +119,8 @@ pub struct InlineProfile {
 ///
 /// Every variant carries the whole of what will run or be stored: for settings the old
 /// value as well as the new one, for a write the bytes themselves and not only their hash.
+/// The one field that is neither is [`TurnStarter`] on a delegated CLI request, which the
+/// dialog shows and nothing else reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Class {
     /// A shell command on the native backend. `command` is the exact string the executor
@@ -169,6 +171,7 @@ pub enum Class {
         cli_request_id: String,
         command: String,
         cwd: PathBuf,
+        turn: TurnStarter,
     },
     /// A tool call a CLI-backed run forwards through the bridge to a tool the core polices
     /// (#44).
@@ -196,8 +199,20 @@ impl Class {
     }
 }
 
+/// Who started the turn a delegated CLI request came from (#78). Display only: the dialog
+/// says so when it was the backend, and no policy, token or reply reads it. Set from the
+/// backend's own turn bookkeeping, never from anything in the request the CLI relayed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnStarter {
+    /// The caller's input started it.
+    Caller,
+    /// The backend started it with no input from the caller.
+    Backend,
+}
+
 /// What a caller may supply. Everything that makes the request trustworthy — the id, the
-/// backend, resolution, snapshots — is added by the gate.
+/// backend, resolution, snapshots — is added by the gate. Beside what the model or the user
+/// chose, it carries one thing the caller observed: the [`TurnStarter`] of a CLI request.
 #[derive(Clone, Debug)]
 pub struct RequestSpec {
     pub run: Option<RunId>,
@@ -250,6 +265,7 @@ pub enum ClassSpec {
         command: String,
         cwd: PathBuf,
         session_grant: bool,
+        turn: TurnStarter,
     },
     BridgeForward {
         tool: String,

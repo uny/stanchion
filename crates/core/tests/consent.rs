@@ -15,10 +15,10 @@ use stanchion_core::consent::presenter::{
 };
 use stanchion_core::consent::render::{escape, unescape};
 use stanchion_core::consent::request::{
-    Backend, Binding, ClassSpec, InlineProfile, Program, Request, RequestSpec, RunId,
+    Backend, Binding, ClassSpec, InlineProfile, Program, Request, RequestSpec, RunId, TurnStarter,
 };
 use stanchion_core::consent::token::Origin;
-use stanchion_core::consent::{Config, Consent, AFFIRMATIVE, NEGATIVE};
+use stanchion_core::consent::{Config, Consent, AFFIRMATIVE, BACKEND_TURN, NEGATIVE};
 use stanchion_core::execute::{
     Bridge, BridgeSink, CliApproval, ExecutionSink, NativeExecutor, Reply, ReplyTransport, RunSink,
     RunStarter, SettingsChange, SettingsStore, SettingsWriter,
@@ -369,6 +369,7 @@ fn specs(run: RunId, ws: &Path) -> Vec<(&'static str, RequestSpec)> {
                     command: "git push --force".into(),
                     cwd: ws.to_path_buf(),
                     session_grant: false,
+                    turn: TurnStarter::Caller,
                 },
             ),
         ),
@@ -761,6 +762,7 @@ fn a_session_wide_grant_from_a_cli_is_refused_before_any_dialog() {
             command: "ls".into(),
             cwd: ws.path().to_path_buf(),
             session_grant: true,
+            turn: TurnStarter::Caller,
         },
     };
     let mut effects = Effects::default();
@@ -1197,6 +1199,7 @@ fn a_cli_request_that_does_not_mint_gets_exactly_one_well_formed_deny() {
                 command: "ls".into(),
                 cwd: ws.path().to_path_buf(),
                 session_grant: false,
+                turn: TurnStarter::Caller,
             },
         };
         let mut effects = Effects::default();
@@ -1226,6 +1229,7 @@ fn a_cli_request_that_does_not_mint_gets_exactly_one_well_formed_deny() {
             command: "ls".into(),
             cwd: ws.path().to_path_buf(),
             session_grant: false,
+            turn: TurnStarter::Caller,
         },
     };
     assert_eq!(
@@ -1275,4 +1279,84 @@ fn a_run_bound_request_carries_its_backend_and_an_application_request_none() {
         })
         .unwrap();
     assert_eq!(token.request().binding(), Binding::Application);
+}
+
+fn cli_spec(run: RunId, ws: &Path, command: &str, turn: TurnStarter) -> RequestSpec {
+    RequestSpec {
+        run: Some(run),
+        workspace_root: ws.to_path_buf(),
+        class: ClassSpec::CliCommand {
+            cli_request_id: "req-1".into(),
+            command: command.into(),
+            cwd: ws.to_path_buf(),
+            session_grant: false,
+            turn,
+        },
+    }
+}
+
+#[test]
+fn a_request_from_a_turn_the_backend_started_says_so_in_the_title() {
+    let ws = Workspace::new();
+    let presenter = FakePresenter::new(Mode::Allow);
+    let gate = gate(&presenter);
+    let run = gate.register_run(Backend::ClaudeCode);
+    assert!(gate
+        .ask(cli_spec(run, ws.path(), "ls", TurnStarter::Caller))
+        .is_ok());
+    assert!(gate
+        .ask(cli_spec(run, ws.path(), "ls", TurnStarter::Backend))
+        .is_ok());
+    let shown = presenter.shown();
+    let caller = format!("{run} (claude-code) \u{2014} allow a command the CLI asked about");
+    assert_eq!(shown[0].title, caller);
+    assert_eq!(shown[1].title, format!("{caller}{BACKEND_TURN}"));
+    // Only the title differs: the origin is said, not acted on.
+    assert_eq!(shown[0].body, shown[1].body);
+    assert_eq!(shown[0].parsed, shown[1].parsed);
+}
+
+#[test]
+fn no_value_the_model_supplies_can_show_the_backend_turn_suffix() {
+    // It holds a character the escape never lets through, so a command, a cwd or any
+    // other model-supplied value that carries the same text shows something else.
+    assert!(!BACKEND_TURN.is_ascii());
+    let ws = Workspace::new();
+    let presenter = FakePresenter::new(Mode::Allow);
+    let gate = gate(&presenter);
+    let run = gate.register_run(Backend::ClaudeCode);
+    let forged = format!("ls{BACKEND_TURN}");
+    assert!(gate
+        .ask(cli_spec(run, ws.path(), &forged, TurnStarter::Caller))
+        .is_ok());
+    let shown = presenter.shown();
+    assert!(!shown[0].title.contains(BACKEND_TURN), "{}", shown[0].title);
+    assert!(!shown[0].body.contains(BACKEND_TURN), "{}", shown[0].body);
+    assert_eq!(unescape(&shown[0].body).unwrap(), forged.as_bytes());
+}
+
+#[test]
+fn the_backend_turn_suffix_counts_toward_the_presenters_capacity() {
+    // The origin changes what is shown, and so what is measured: a request that fits from
+    // the caller's turn can be over capacity from the backend's, and is refused as any
+    // other request that does not fit. No other decision reads it.
+    let ws = Workspace::new();
+    let probe = FakePresenter::new(Mode::Allow);
+    let probe_gate = gate(&probe);
+    let run = probe_gate.register_run(Backend::ClaudeCode);
+    probe_gate
+        .ask(cli_spec(run, ws.path(), "ls", TurnStarter::Caller))
+        .unwrap();
+    let fits = probe.shown()[0].shown_len();
+
+    let presenter = FakePresenter::with_capacity(Mode::Allow, fits);
+    let gate = gate(&presenter);
+    let run = gate.register_run(Backend::ClaudeCode);
+    assert!(gate
+        .ask(cli_spec(run, ws.path(), "ls", TurnStarter::Caller))
+        .is_ok());
+    assert!(matches!(
+        gate.ask(cli_spec(run, ws.path(), "ls", TurnStarter::Backend)),
+        Err(Refusal::OverCapacity { bytes, capacity }) if bytes == fits + BACKEND_TURN.len() && capacity == fits
+    ));
 }

@@ -73,11 +73,11 @@ use std::time::Duration;
 
 use super::json::Value;
 use super::{create_private_dir, read_bounded_line, Helper, Shared};
-use crate::backend::{AttachmentId, BackendError, Event, ToolCallId};
+use crate::backend::{AttachmentId, BackendError, Event, ToolCallId, TurnOrigin};
 use crate::consent::policy::Refusal;
 use crate::consent::presenter::Rendered;
 use crate::consent::render::escape_inline;
-use crate::consent::request::{ClassSpec, RequestSpec};
+use crate::consent::request::{ClassSpec, RequestSpec, TurnStarter};
 use crate::execute::{CliApproval, Reply, ReplyTransport};
 
 /// The name the MCP configuration gives the helper, and so the prefix of the tool the
@@ -352,9 +352,10 @@ impl Shared {
         let call = ToolCallId(id.to_string());
         let shown_name = escape_inline(name.as_bytes());
 
-        // The turn the call belongs to, and the record that it asked — taken before the
-        // gate is involved, so `on_result` sees it whichever way the answer goes.
-        let turn = {
+        // The turn the call belongs to, who started it, and the record that it asked —
+        // taken under one lock before the gate is involved, so `on_result` sees it
+        // whichever way the answer goes, and the origin is the named turn's.
+        let (turn, origin) = {
             let mut state = self.state.lock().unwrap();
             if state.ended {
                 self.deny_at_the_door(&mut reply, AtTheDoor::Ended);
@@ -363,7 +364,7 @@ impl Shared {
             match state.turn.as_mut() {
                 Some(turn) => {
                     turn.asked.insert(id.to_string());
-                    turn.id
+                    (turn.id, turn.origin)
                 }
                 None => {
                     drop(state);
@@ -420,6 +421,11 @@ impl Shared {
                 // The reply never carries `updatedPermissions` or `updatedInput`, so
                 // whatever the request offers, nothing beyond this one call is granted.
                 session_grant: false,
+                // From the turn bookkeeping, never from the request line.
+                turn: match origin {
+                    TurnOrigin::Caller => TurnStarter::Caller,
+                    TurnOrigin::Backend => TurnStarter::Backend,
+                },
             },
         };
         let mut invocation = None;
