@@ -127,7 +127,8 @@ impl fmt::Display for SessionId {
 /// own, the point it started one ([`TurnOrigin::Backend`]) — to the point the backend
 /// reports the model has stopped, however it stopped. Core-issued from one counter for the
 /// process, so a turn id is unique across every attachment and conversation, not merely
-/// within one.
+/// within one. Not an order: a caller's turn is issued when its input is written, and a
+/// turn the backend starts before that input's may carry a later id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TurnId(u64);
 
@@ -425,6 +426,11 @@ pub enum TurnEnd {
     /// The attachment ended under it. What a resume does with it is
     /// [`Capabilities::after_crash`].
     Cut,
+    /// The input was taken into turn `into`, already in progress, rather than starting a
+    /// turn of its own: what the model did with it is reported under `into`. Claude Code
+    /// does this when an input arrives while a turn it started itself is inside a call
+    /// (#73).
+    Joined { into: TurnId },
 }
 
 /// How an attachment ended.
@@ -632,7 +638,9 @@ pub trait Session: sealed::Sealed + Send + Sync {
 
     /// The user's own input. Starts a turn, or — when [`Capabilities::mid_turn_input`] —
     /// joins the one in progress; otherwise [`BackendError::Busy`]. The turn id is issued
-    /// here and [`Event::TurnStarted`] follows on the sink.
+    /// here; [`Event::TurnStarted`] and [`Event::TurnEnded`] follow on the sink for it,
+    /// once the backend has seen the turn begin, which may be after a turn of the
+    /// backend's own.
     fn send(&self, input: UserInput) -> Result<TurnId, BackendError>;
 
     /// An inbox message (#43). Returns once the message is [`Delivery::Enqueued`]; the

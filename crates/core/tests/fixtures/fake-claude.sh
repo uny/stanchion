@@ -25,6 +25,14 @@
 #   FAKE_CLAUDE_TOOLS=path     prefix for the markers of the "tools" turn (below)
 #   Inputs whose text is `background` or `background-open` end their own turn at once
 #   and are followed, with no input, by a turn the fake starts itself (below).
+#   FAKE_CLAUDE_NO_LIFECYCLE=1 report no `command_lifecycle` lines and no
+#                              `msg_lifecycle_v1` capability, as a CLI before them
+#   An input that carries a `uuid` is reported by `command_lifecycle` lines as 2.1.281
+#   reports it (#73): `queued`, `started` before its `init`, and `completed` (or
+#   `cancelled`, after an error) after its `result`. A turn the fake starts itself has
+#   none. Inputs whose text is `race` or `join` replay what 2.1.281 does with an input
+#   that arrives as the CLI starts a turn of its own; `drop` and `stall` leave an input
+#   that never begins a turn (below).
 #   FAKE_CLAUDE_ASK=1          on the default turn, ask about `toolu_denied` the way the
 #                              real CLI does: spawn the helper named in --mcp-config, drive
 #                              the MCP handshake and one tools/call, and act on the reply
@@ -55,6 +63,8 @@ fi
 SESSION="00000000-0000-0000-0000-000000000000"
 turns=0
 init_done=0
+# The `uuid` of the input whose turn is running, owed a terminal lifecycle line.
+current=""
 
 note() {
   if [ -n "${FAKE_CLAUDE_STATE:-}" ]; then
@@ -65,13 +75,29 @@ note() {
 emit_init() {
   if [ "$init_done" -eq 0 ]; then
     init_done=1
-    printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"$PWD\",\"session_id\":\"$SESSION\",\"model\":\"fake-model\",\"permissionMode\":\"default\",\"apiKeySource\":\"none\",\"claude_code_version\":\"0.0.0-fake\"}"
+    caps=',"capabilities":["interrupt_receipt_v1","msg_lifecycle_v1"]'
+    if [ "${FAKE_CLAUDE_NO_LIFECYCLE:-0}" = "1" ]; then
+      caps=''
+    fi
+    printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"$PWD\",\"session_id\":\"$SESSION\",\"model\":\"fake-model\",\"permissionMode\":\"default\",\"apiKeySource\":\"none\",\"claude_code_version\":\"0.0.0-fake\"$caps}"
+  fi
+}
+
+# One `command_lifecycle` line: `$1` the input's uuid, `$2` the state.
+lifecycle() {
+  if [ -n "$1" ] && [ "${FAKE_CLAUDE_NO_LIFECYCLE:-0}" != "1" ]; then
+    printf '%s\n' '{"type":"command_lifecycle","command_uuid":"'"$1"'","state":"'"$2"'","session_id":"'"$SESSION"'"}'
   fi
 }
 
 emit_result() {
   turns=$((turns + 1))
   printf '%s\n' "$1"
+  case "$1" in
+    *'"is_error":true'*) lifecycle "$current" cancelled ;;
+    *) lifecycle "$current" completed ;;
+  esac
+  current=""
   if [ "${FAKE_CLAUDE_CRASH_AFTER:-0}" -eq "$turns" ]; then
     kill -9 $$
   fi
@@ -121,6 +147,56 @@ while IFS= read -r line; do
       ;;
     *'"type":"user"'*)
       note "user:$line"
+      uuid=$(printf '%s' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+      ok='{"type":"result","subtype":"success","is_error":false,"session_id":"'"$SESSION"'","total_cost_usd":0.001,"usage":{"input_tokens":1,"output_tokens":1},"permission_denials":[]}'
+      case "$line" in
+        *'"text":"race"'*)
+          # The CLI began a turn of its own just before reading the input: that turn
+          # runs first, and the input's begins after it (2.1.281, m73 own-turn).
+          init_done=0
+          emit_init
+          lifecycle "$uuid" queued
+          printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"text","text":"theirs"}]}}'
+          emit_result "$ok"
+          lifecycle "$uuid" started
+          current=$uuid
+          init_done=0
+          emit_init
+          printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"text","text":"mine"}]}}'
+          emit_result "$ok"
+          continue
+          ;;
+        *'"text":"join"'*)
+          # The CLI's own turn was inside a call when the input arrived: the input is
+          # taken into it after the call's result, with no `init` (2.1.281, m73
+          # backend-join), and one `result` ends both.
+          init_done=0
+          emit_init
+          printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"tool_use","id":"toolu_join","name":"Bash","input":{"command":"sleep 12"}}]}}'
+          lifecycle "$uuid" queued
+          printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_join","content":"","is_error":false}]}}'
+          lifecycle "$uuid" started
+          printf '%s\n' '{"type":"assistant","message":{"model":"fake-model","role":"assistant","content":[{"type":"text","text":"joined"}]}}'
+          lifecycle "$uuid" completed
+          emit_result "$ok"
+          continue
+          ;;
+        *'"text":"stall"'*)
+          # Read and never begun.
+          lifecycle "$uuid" queued
+          continue
+          ;;
+        *'"text":"drop"'*)
+          # Dropped before it began: not seen on the real CLI, which the backend must
+          # still survive.
+          lifecycle "$uuid" queued
+          lifecycle "$uuid" cancelled
+          continue
+          ;;
+      esac
+      lifecycle "$uuid" queued
+      lifecycle "$uuid" started
+      current=$uuid
       init_done=0
       emit_init
       if [ "${FAKE_CLAUDE_NOT_LOGGED_IN:-0}" != "0" ]; then

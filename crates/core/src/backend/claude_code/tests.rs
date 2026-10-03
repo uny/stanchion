@@ -472,7 +472,8 @@ fn busy_while_a_turn_is_open_and_the_inbox_waits_for_it() {
     );
     assert!(!dirs.state().contains("look at this"));
 
-    // The interrupt ends the turn; the held message then starts the next one.
+    // The interrupt ends the turn; the held message is then written, and its turn is
+    // reported once the CLI begins it.
     session.interrupt().unwrap();
     session.interrupt().unwrap();
     let got = events.wait_for(
@@ -490,7 +491,7 @@ fn busy_while_a_turn_is_open_and_the_inbox_waits_for_it() {
         .unwrap();
     assert_eq!(
         &kinds(&got)[from..from + 3],
-        ["TurnEnded", "TurnStarted", "Delivery"]
+        ["TurnEnded", "Delivery", "TurnStarted"]
     );
     // The cut turn's call was reported, and is not claimed to have run.
     assert!(got[..from]
@@ -504,7 +505,7 @@ fn busy_while_a_turn_is_open_and_the_inbox_waits_for_it() {
         .iter()
         .any(|e| matches!(e, Event::Diagnostic { text } if text.contains("unhandled"))));
     assert_eq!(
-        got[from + 2],
+        got[from + 1],
         Event::Delivery {
             id: DeliveryId(7),
             state: Delivery::Accepted
@@ -1053,8 +1054,8 @@ fn directory_names_are_injective_and_have_no_separators() {
 #[test]
 fn the_user_line_is_the_shape_the_cli_reads() {
     assert_eq!(
-        user_line("hi \"there\"\n"),
-        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi \"there\"\n"}]}}"#
+        user_line("hi \"there\"\n", "u-1"),
+        r#"{"type":"user","uuid":"u-1","message":{"role":"user","content":[{"type":"text","text":"hi \"there\"\n"}]}}"#
     );
     assert_eq!(
         interrupt_line(4),
@@ -1600,15 +1601,15 @@ fn input_waits_for_a_turn_the_cli_starts() {
     assert!(!dirs.state().contains("look at this"));
 
     // Interrupt reaches it as any turn; its cut call is not claimed to have run, and the
-    // held message then starts the next turn, the caller's.
+    // held message is then written and begins the next turn, the caller's.
     session.interrupt().unwrap();
-    let got = events.wait_for("Delivery Accepted", |e| {
+    let got = events.wait_for("the caller's TurnStarted", |e| {
         matches!(
             e,
-            Event::Delivery {
-                state: Delivery::Accepted,
-                ..
-            }
+            Event::TurnStarted {
+                origin: TurnOrigin::Caller,
+                turn,
+            } if *turn > theirs
         )
     });
     let from = got
@@ -1620,13 +1621,10 @@ fn input_waits_for_a_turn_the_cli_starts() {
             }
         })
         .unwrap();
-    assert!(matches!(
-        got[from + 1],
-        Event::TurnStarted {
-            origin: TurnOrigin::Caller,
-            ..
-        }
-    ));
+    assert_eq!(
+        &kinds(&got)[from..from + 3],
+        ["TurnEnded", "Delivery", "TurnStarted"]
+    );
     assert!(!got
         .iter()
         .any(|e| matches!(e, Event::RanWithoutAsking { turn: t, .. } if *t == theirs)));
@@ -1655,6 +1653,241 @@ fn a_turn_the_cli_starts_is_cut_by_its_end() {
         end: TurnEnd::Cut
     }));
     assert_eq!(exited(&got).unwrap().0, &Exit::Terminated);
+}
+
+/// Sends `hi` and waits for its turn to complete.
+fn finished_turn(session: &dyn Session, events: &Recorder) -> TurnId {
+    let turn = session.send(UserInput { text: "hi".into() }).unwrap();
+    events.wait_for(
+        "TurnEnded",
+        |e| matches!(e, Event::TurnEnded { turn: t, end: TurnEnd::Completed } if *t == turn),
+    );
+    turn
+}
+
+/// The text of every message reported under `turn`.
+fn said(events: &[Event], turn: TurnId) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::MessageComplete { turn: t, message } if *t == turn => {
+                Some(message.text.as_str())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_turn_the_cli_starts_as_an_input_is_written_is_not_the_inputs() {
+    let dirs = Dirs::new("race");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs);
+    let session = start(&backend, &dirs, &events);
+    let first = finished_turn(session.as_ref(), &events);
+
+    // The CLI begins a turn of its own just before it reads the input (#73): that turn
+    // is the backend's, and the input's is reported only once the CLI begins it.
+    let mine = session
+        .send(UserInput {
+            text: "race".into(),
+        })
+        .unwrap();
+    let got = events.wait_for(
+        "the input's TurnEnded",
+        |e| matches!(e, Event::TurnEnded { turn, .. } if *turn == mine),
+    );
+    let theirs = backend_turn(&got, first).unwrap();
+    assert_eq!(said(&got, theirs), ["theirs"]);
+    assert_eq!(said(&got, mine), ["mine"]);
+    let theirs_ended = got
+        .iter()
+        .position(|e| {
+            e == &Event::TurnEnded {
+                turn: theirs,
+                end: TurnEnd::Completed,
+            }
+        })
+        .unwrap();
+    let mine_started = got
+        .iter()
+        .position(|e| {
+            e == &Event::TurnStarted {
+                turn: mine,
+                origin: TurnOrigin::Caller,
+            }
+        })
+        .unwrap();
+    assert!(theirs_ended < mine_started, "{got:#?}");
+    assert_eq!(
+        got.last(),
+        Some(&Event::TurnEnded {
+            turn: mine,
+            end: TurnEnd::Completed
+        })
+    );
+    // The lifecycle lines are read, not logged.
+    assert!(!got
+        .iter()
+        .any(|e| matches!(e, Event::Diagnostic { text } if text.contains("unhandled"))));
+}
+
+#[test]
+fn an_input_taken_into_a_turn_the_cli_started_is_reported_as_joined() {
+    let dirs = Dirs::new("join");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs);
+    let session = start(&backend, &dirs, &events);
+    let first = finished_turn(session.as_ref(), &events);
+
+    let mine = session
+        .send(UserInput {
+            text: "join".into(),
+        })
+        .unwrap();
+    let got = events.wait_for(
+        "the backend's TurnEnded",
+        |e| matches!(e, Event::TurnEnded { turn, .. } if *turn != first && *turn != mine),
+    );
+    let theirs = backend_turn(&got, first).unwrap();
+    // The input's turn id is resolved, started and ended at once, into the CLI's turn;
+    // what the model did with the input is that turn's.
+    let from = got
+        .iter()
+        .position(|e| {
+            e == &Event::TurnStarted {
+                turn: mine,
+                origin: TurnOrigin::Caller,
+            }
+        })
+        .unwrap();
+    assert_eq!(
+        got[from + 1],
+        Event::TurnEnded {
+            turn: mine,
+            end: TurnEnd::Joined { into: theirs },
+        }
+    );
+    assert_eq!(said(&got, theirs), ["joined"]);
+    assert!(!got.iter().any(|e| matches!(
+        e,
+        Event::MessageComplete { turn, .. } | Event::ToolCall { turn, .. } if *turn == mine
+    )));
+    assert_eq!(
+        got.last(),
+        Some(&Event::TurnEnded {
+            turn: theirs,
+            end: TurnEnd::Completed
+        })
+    );
+    // Nothing is left waiting: the next input is taken.
+    finished_turn(session.as_ref(), &events);
+}
+
+#[test]
+fn an_input_dropped_before_it_begins_fails_and_frees_the_session() {
+    let dirs = Dirs::new("drop");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs);
+    let session = start(&backend, &dirs, &events);
+    let mine = session
+        .send(UserInput {
+            text: "drop".into(),
+        })
+        .unwrap();
+    let got = events.wait_for(
+        "TurnEnded",
+        |e| matches!(e, Event::TurnEnded { turn, .. } if *turn == mine),
+    );
+    assert!(matches!(
+        &got[..],
+        [
+            Event::TurnStarted { turn: s, origin: TurnOrigin::Caller },
+            Event::TurnEnded { turn: e, end: TurnEnd::Failed { .. } },
+        ] if *s == mine && *e == mine
+    ));
+    finished_turn(session.as_ref(), &events);
+}
+
+#[test]
+fn an_input_that_never_begins_is_busy_and_cut_by_the_end() {
+    let dirs = Dirs::new("stall");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs);
+    let session = start(&backend, &dirs, &events);
+    let mine = session
+        .send(UserInput {
+            text: "stall".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        session.send(UserInput {
+            text: "more".into()
+        }),
+        Err(BackendError::Busy)
+    );
+    session.terminate().unwrap();
+    let got = events.wait_for("Exited", is_exited);
+    let n = got.len();
+    assert_eq!(
+        got[n - 3..n - 1],
+        [
+            Event::TurnStarted {
+                turn: mine,
+                origin: TurnOrigin::Caller
+            },
+            Event::TurnEnded {
+                turn: mine,
+                end: TurnEnd::Cut
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_cli_without_lifecycles_is_read_as_before() {
+    let dirs = Dirs::new("no-lifecycle");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs).env("FAKE_CLAUDE_NO_LIFECYCLE", "1");
+    let session = start(&backend, &dirs, &events);
+    let first = finished_turn(session.as_ref(), &events);
+    let turn = session
+        .send(UserInput {
+            text: "background".into(),
+        })
+        .unwrap();
+    let got = events.wait_for(
+        "the backend's TurnEnded",
+        |e| matches!(e, Event::TurnEnded { turn: t, .. } if *t != first && *t != turn),
+    );
+    assert!(got.contains(&Event::TurnStarted {
+        turn,
+        origin: TurnOrigin::Caller
+    }));
+    assert_eq!(said(&got, turn), ["started"]);
+    let theirs = backend_turn(&got, first).unwrap();
+    assert_eq!(said(&got, theirs), ["background done"]);
+}
+
+#[test]
+fn every_input_is_named_afresh() {
+    let a = input_uuid(1, 1);
+    let b = input_uuid(1, 2);
+    assert_ne!(a, b);
+    for u in [&a, &b] {
+        let parts: Vec<&str> = u.split('-').collect();
+        assert_eq!(
+            parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+            [8, 4, 4, 4, 12],
+            "{u}"
+        );
+        assert!(u.chars().all(|c| c == '-' || c.is_ascii_hexdigit()), "{u}");
+        assert!(parts[2].starts_with('4'), "{u}");
+        assert!(
+            matches!(parts[3].chars().next(), Some('8' | '9' | 'a' | 'b')),
+            "{u}"
+        );
+    }
 }
 
 /// Records events, and holds the reading thread inside the first `TurnEnded` until
