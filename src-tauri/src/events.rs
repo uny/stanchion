@@ -118,6 +118,7 @@ pub enum TurnEndRef {
     Failed { detail: String },
     NotSignedIn { how: String },
     Cut,
+    Joined { into: u64 },
 }
 
 impl From<TurnEnd> for TurnEndRef {
@@ -128,6 +129,7 @@ impl From<TurnEnd> for TurnEndRef {
             TurnEnd::Failed { detail } => TurnEndRef::Failed { detail },
             TurnEnd::NotSignedIn { how } => TurnEndRef::NotSignedIn { how },
             TurnEnd::Cut => TurnEndRef::Cut,
+            TurnEnd::Joined { into } => TurnEndRef::Joined { into: into.raw() },
         }
     }
 }

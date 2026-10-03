@@ -66,14 +66,22 @@
 //!   turn's own.
 //! - On 2.1.280 (#46), when a background task finishes the CLI starts a turn with no
 //!   input: `init`, the model's messages and a `result` arrive between the caller's
-//!   turns. An `init` with no turn open, once a `result` has been seen on the attachment,
-//!   opens a turn marked [`TurnOrigin::Backend`], and its calls take the approval path any
-//!   turn's do (#63). Observed in the application on 2.1.281: after a background
-//!   `sleep`, the CLI's own turn ran `echo` unasked and asked about `touch`, which reached
-//!   the gate under that turn and ran once allowed. What the stream does not carry is
-//!   which input a turn answers: a turn the CLI starts just as an input is written is
-//!   reported under the input's turn, and an approval request taken before the reading
-//!   thread has seen its `init` is denied at the door (`docs/decisions.md`).
+//!   turns. Such a turn is reported as a turn marked [`TurnOrigin::Backend`], and its
+//!   calls take the approval path any turn's do (#63). Observed in the application on
+//!   2.1.281: after a background `sleep`, the CLI's own turn ran `echo` unasked and asked
+//!   about `touch`, which reached the gate under that turn and ran once allowed.
+//! - Which input a turn answers is read from the stream (#73). Every input carries a
+//!   `uuid`, and on 2.1.281 the CLI then reports it in `command_lifecycle` lines:
+//!   `queued` as it is read, `started` just before the `init` of its turn, `completed`
+//!   or `cancelled` after that turn's `result`; a turn the CLI starts itself has none, and
+//!   `init.capabilities` lists `msg_lifecycle_v1`. So an `init` right after the written
+//!   input's `started` opens that input's turn, and one without, once a `result` has been
+//!   seen, is the CLI's. An input read while a turn the CLI started is inside a call is
+//!   taken into that turn — `started` with no `init`, one `result` for both — and its
+//!   turn id ends [`TurnEnd::Joined`] at once. A turn is reported when the CLI begins it,
+//!   not when its input is written, so the input's id is issued before a CLI turn that
+//!   runs first. An approval request taken before the reading thread has seen its
+//!   turn's `init` is denied at the door (`docs/decisions.md`).
 //!
 //! # Runtime
 //!
@@ -437,6 +445,8 @@ impl ClaudeCode {
             state: Mutex::new(State {
                 session: resume.clone(),
                 turn: None,
+                written: None,
+                inputs: 0,
                 queue: VecDeque::new(),
                 terminated: false,
                 ended: false,
@@ -555,11 +565,28 @@ struct OpenTurn {
     not_signed_in: bool,
 }
 
+/// An input on the wire. `turn` was issued when it was written and is reported once the
+/// CLI's `command_lifecycle` lines say what became of it (#73).
+struct Written {
+    uuid: String,
+    turn: TurnId,
+    /// `started` arrived with no turn open: the next `init` opens this input's turn.
+    started: bool,
+    /// [`Session::interrupt`] was called before its turn began: the turn is cut as it
+    /// begins.
+    interrupt: bool,
+}
+
 struct State {
     /// The CLI's session id once known: from `init` on a start, from the caller on a
     /// resume.
     session: Option<String>,
     turn: Option<OpenTurn>,
+    /// The input written to the CLI whose turn has not been seen to begin. At most one:
+    /// nothing else is written until it resolves.
+    written: Option<Written>,
+    /// Inputs written on this attachment, for their `uuid`.
+    inputs: u64,
     /// Inbox messages held while a turn is in progress.
     queue: VecDeque<InboxMessage>,
     terminated: bool,
@@ -641,21 +668,44 @@ impl Shared {
             .map_err(|e| BackendError::Transport(format!("stdin: {e}")))
     }
 
-    /// Opens a turn and sends `text` as the user's message. `state` is the caller's lock;
-    /// the turn is open only once the write succeeded.
-    fn start_turn(
-        &self,
-        state: &mut State,
-        out: &mut Vec<Event>,
-        text: &str,
-    ) -> Result<TurnId, BackendError> {
-        self.write_line(&user_line(text))?;
-        Ok(self.open_turn(state, out, TurnOrigin::Caller))
+    /// Sends `text` as the user's message and issues its turn id. `state` is the caller's
+    /// lock; the input is [`State::written`] only once the write succeeded, and its turn is
+    /// reported when the CLI begins it, not here.
+    fn write_input(&self, state: &mut State, text: &str) -> Result<TurnId, BackendError> {
+        state.inputs += 1;
+        let uuid = input_uuid(self.lease.id().raw(), state.inputs);
+        self.write_line(&user_line(text, &uuid))?;
+        let turn = self.lease.next_turn();
+        state.written = Some(Written {
+            uuid,
+            turn,
+            started: false,
+            interrupt: false,
+        });
+        Ok(turn)
+    }
+
+    /// Whether anything is between the caller and the CLI: a turn, or an input whose turn
+    /// has not begun. Nothing more is written until neither is.
+    fn busy(state: &State) -> bool {
+        state.turn.is_some() || state.written.is_some()
     }
 
     /// Opens a turn in `state` and reports it.
     fn open_turn(&self, state: &mut State, out: &mut Vec<Event>, origin: TurnOrigin) -> TurnId {
         let turn = self.lease.next_turn();
+        self.open_turn_as(state, out, turn, origin);
+        turn
+    }
+
+    /// Opens turn `turn`, issued earlier, in `state` and reports it.
+    fn open_turn_as(
+        &self,
+        state: &mut State,
+        out: &mut Vec<Event>,
+        turn: TurnId,
+        origin: TurnOrigin,
+    ) {
         state.turn = Some(OpenTurn {
             id: turn,
             calls: Vec::new(),
@@ -665,14 +715,47 @@ impl Shared {
             not_signed_in: false,
         });
         out.push(Event::TurnStarted { turn, origin });
-        turn
     }
 
-    /// Sends the first held inbox message when no turn is open. On a failed write the
-    /// message stays at the head of the queue — still [`Delivery::Enqueued`], still
+    /// Asks the CLI to cut the open turn, once. Flagged only once the request is on the
+    /// wire: a failed write leaves the turn as it was, so its end is not misreported and a
+    /// retry can send again.
+    fn interrupt_open(&self, state: &mut State) -> Result<(), BackendError> {
+        let Some(turn) = state.turn.as_mut() else {
+            return Ok(());
+        };
+        if !turn.interrupting {
+            self.write_line(&interrupt_line(turn.id.0))?;
+            turn.interrupting = true;
+        }
+        Ok(())
+    }
+
+    /// Sends the interrupt [`Session::interrupt`] left for an input whose turn had not
+    /// begun, now that the turn it is in has. A failed write goes to the log.
+    fn interrupt_deferred(&self, state: &mut State, out: &mut Vec<Event>) {
+        if let Err(e) = self.interrupt_open(state) {
+            out.push(Event::Diagnostic {
+                text: format!("interrupt not sent: {e}"),
+            });
+        }
+    }
+
+    /// Reports the turn of an input that never began one: issued, so it is started and
+    /// ended in the same breath, with `end` saying why.
+    fn resolve_unbegun(out: &mut Vec<Event>, turn: TurnId, end: TurnEnd) {
+        out.push(Event::TurnStarted {
+            turn,
+            origin: TurnOrigin::Caller,
+        });
+        out.push(Event::TurnEnded { turn, end });
+    }
+
+    /// Sends the first held inbox message when nothing is in progress. On a failed write
+    /// the message stays at the head of the queue — still [`Delivery::Enqueued`], still
     /// held — and the failure goes to the log.
     fn flush_queue(&self, state: &mut State, out: &mut Vec<Event>) {
-        if state.turn.is_some() || state.ended {
+        if Self::busy(state) || state.ended {
             return;
         }
         let Some(message) = state.queue.front() else {
@@ -680,7 +763,7 @@ impl Shared {
         };
         let text = inbox_text(message);
         let id = message.id;
-        match self.start_turn(state, out, &text) {
+        match self.write_input(state, &text) {
             Ok(_) => {
                 state.queue.pop_front();
                 out.push(Event::Delivery {
@@ -717,6 +800,7 @@ impl Shared {
                 Some("assistant") => self.on_assistant(&mut state, &mut out, &value),
                 Some("user") => self.on_user(&state, &mut out, &value),
                 Some("result") => self.on_result(&mut state, &mut out, &value),
+                Some("command_lifecycle") => self.on_lifecycle(&mut state, &mut out, &value),
                 // The acknowledgement of a control request `interrupt` sent; the turn's
                 // end is the `result` line that follows, and this carries nothing else.
                 // The rate limit line is the CLI's own quota accounting, not this run's.
@@ -747,12 +831,33 @@ impl Shared {
             }
             return;
         }
-        // `init` opens every turn the CLI runs. One with no turn open, once a turn has
-        // ended on this attachment, is a turn the CLI started itself — when a background
-        // task finishes (#63) — and it is reported as a turn, so its calls reach the gate
-        // as any other turn's do. Decided before anything below can return early.
-        if state.turn.is_none() && state.seen_result && !state.terminated && !state.ended {
-            self.open_turn(state, out, TurnOrigin::Backend);
+        // `init` opens every turn the CLI runs; whose turn it is, the lines before it say
+        // (#73). Right after a `started` for the input on the wire, it is that input's. A
+        // CLI that reports lifecycles names none for a turn it starts itself — when a
+        // background task finishes (#63) — so an `init` with no `started` before it is
+        // the CLI's, once a turn has ended on this attachment; it is reported as a turn,
+        // so its calls reach the gate as any other turn's do, and the input on the wire
+        // waits behind it. A CLI that reports no lifecycles is read as before: the input
+        // on the wire owns the next `init`. Decided before anything below can return
+        // early.
+        if state.turn.is_none() && !state.terminated && !state.ended {
+            let lifecycles = value
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .is_some_and(|c| c.iter().any(|c| c.as_str() == Some("msg_lifecycle_v1")));
+            let theirs = state
+                .written
+                .as_ref()
+                .is_some_and(|w| w.started || !lifecycles);
+            if theirs {
+                let written = state.written.take().expect("checked");
+                self.open_turn_as(state, out, written.turn, TurnOrigin::Caller);
+                if written.interrupt {
+                    self.interrupt_deferred(state, out);
+                }
+            } else if state.seen_result {
+                self.open_turn(state, out, TurnOrigin::Backend);
+            }
         }
         let field = |k: &str| {
             escape_inline(
@@ -792,6 +897,64 @@ impl Shared {
                 ),
             }),
             Some(_) => {}
+        }
+    }
+
+    /// A `command_lifecycle` line: the CLI saying what became of an input that carried a
+    /// `uuid` (#73). Measured on 2.1.281: `queued` as it is read, `started` just before
+    /// the `init` of the turn it begins — or with no `init`, when it is taken into a turn
+    /// already inside a call — and `completed` or `cancelled` once that turn is over.
+    /// Only a line about the input still on the wire changes anything: `started`, or a
+    /// `cancelled` or `completed` before its turn was seen to begin — before any
+    /// `started`, or after one with no `init` — which ends its id `Failed`, none of them
+    /// seen on 2.1.281. A line about an input already resolved is the tail of a turn
+    /// reported elsewhere.
+    fn on_lifecycle(&self, state: &mut State, out: &mut Vec<Event>, value: &Value) {
+        let uuid = value.get("command_uuid").and_then(Value::as_str);
+        let Some(written) = state.written.as_mut() else {
+            return;
+        };
+        if uuid != Some(written.uuid.as_str()) {
+            return;
+        }
+        match value.get("state").and_then(Value::as_str) {
+            Some("started") => match &state.turn {
+                // Taken into the turn in progress — on this backend, which writes nothing
+                // while a turn is open, only a turn the CLI started as the input was
+                // written. The model's answer is that turn's, and reported under it.
+                Some(open) => {
+                    let into = open.id;
+                    let turn = written.turn;
+                    let interrupt = written.interrupt;
+                    state.written = None;
+                    Self::resolve_unbegun(out, turn, TurnEnd::Joined { into });
+                    if interrupt {
+                        self.interrupt_deferred(state, out);
+                    }
+                }
+                None => written.started = true,
+            },
+            // `completed` for an input still on the wire is a turn this backend did not
+            // see begin — never seen on 2.1.281, where `started` precedes every `init` —
+            // and resolving it is what keeps the session from staying `Busy`.
+            Some(end @ ("cancelled" | "completed")) => {
+                let turn = written.turn;
+                state.written = None;
+                let detail = if end == "cancelled" {
+                    "the CLI dropped the input before it began a turn"
+                } else {
+                    "the CLI finished the input without a turn seen to begin"
+                };
+                Self::resolve_unbegun(
+                    out,
+                    turn,
+                    TurnEnd::Failed {
+                        detail: detail.into(),
+                    },
+                );
+                self.flush_queue(state, out);
+            }
+            _ => {}
         }
     }
 
@@ -909,8 +1072,9 @@ impl Shared {
 
     fn on_user(&self, state: &State, out: &mut Vec<Event>, value: &Value) {
         // A `user` line on stdout is a tool result the CLI fed the model, or (with
-        // `--replay-user-messages`, not passed) an echo of our own input. Only the first
-        // is reported.
+        // `--replay-user-messages`, not passed: the echo comes after the turn's `init`, too
+        // late to say whose turn it is, #73) an echo of our own input. Only the first is
+        // reported.
         let Some(turn) = &state.turn else { return };
         let Some(message) = value.get("message") else {
             return;
@@ -1092,6 +1256,9 @@ impl Shared {
                 end: TurnEnd::Cut,
             });
         }
+        if let Some(written) = state.written.take() {
+            Self::resolve_unbegun(&mut out, written.turn, TurnEnd::Cut);
+        }
         let exit = if state.terminated {
             Exit::Terminated
         } else {
@@ -1185,9 +1352,11 @@ fn over_long(len: usize) -> String {
     format!("line of {len} bytes dropped: longer than {MAX_LINE}")
 }
 
-fn user_line(text: &str) -> String {
+fn user_line(text: &str, uuid: &str) -> String {
     Value::Object(vec![
         ("type".into(), Value::String("user".into())),
+        // What the CLI's `command_lifecycle` lines name the input by (#73).
+        ("uuid".into(), Value::String(uuid.into())),
         (
             "message".into(),
             Value::Object(vec![
@@ -1203,6 +1372,34 @@ fn user_line(text: &str) -> String {
         ),
     ])
     .to_json()
+}
+
+/// A fresh UUID-shaped name for the `n`-th input on attachment `attachment`. Unique, not
+/// secret: the CLI keys its lifecycle lines on it and may keep it in the session's
+/// transcript, which a resume in a later process appends to, so a counter alone could
+/// repeat one. `RandomState` is seeded from the OS once per thread and differs per
+/// instance, which is randomness enough for that and needs no dependency.
+fn input_uuid(attachment: u64, n: u64) -> String {
+    use std::hash::{BuildHasher as _, Hasher as _};
+    let half = |salt: u64| {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(attachment);
+        h.write_u64(n);
+        h.write_u64(salt);
+        h.finish()
+    };
+    let (hi, lo) = (half(0), half(1));
+    // Version 4, variant 10, as RFC 9562 lays out a random UUID.
+    let hi = (hi & 0xffff_ffff_ffff_0fff) | 0x0000_0000_0000_4000;
+    let lo = (lo & 0x3fff_ffff_ffff_ffff) | 0x8000_0000_0000_0000;
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        hi >> 32,
+        (hi >> 16) & 0xffff,
+        hi & 0xffff,
+        lo >> 48,
+        lo & 0xffff_ffff_ffff
+    )
 }
 
 /// The stream-json control request that interrupts the turn in progress.
@@ -1236,17 +1433,15 @@ impl Session for ClaudeSession {
     }
 
     fn send(&self, input: UserInput) -> Result<TurnId, BackendError> {
+        // Nothing is reported here: the turn is, once the CLI begins it. `emit` is still
+        // taken, so the reader cannot handle the input's lifecycle lines before
+        // `written` names it.
         let _emit = self.shared.emit.lock().unwrap();
-        let mut out = Vec::new();
-        let result = {
-            let mut state = self.shared.checked()?;
-            if state.turn.is_some() {
-                return Err(BackendError::Busy);
-            }
-            self.shared.start_turn(&mut state, &mut out, &input.text)
-        };
-        self.shared.deliver_pending(out);
-        result
+        let mut state = self.shared.checked()?;
+        if Shared::busy(&state) {
+            return Err(BackendError::Busy);
+        }
+        self.shared.write_input(&mut state, &input.text)
     }
 
     fn deliver(&self, message: InboxMessage) -> Result<(), BackendError> {
@@ -1268,16 +1463,15 @@ impl Session for ClaudeSession {
     fn interrupt(&self) -> Result<(), BackendError> {
         let _emit = self.shared.emit.lock().unwrap();
         let mut state = self.shared.checked()?;
-        let Some(turn) = state.turn.as_mut() else {
+        // An input whose turn has not begun is cut as it begins, not now: measured on
+        // 2.1.281, the control request leaves a queued input queued, and its turn runs.
+        if state.turn.is_none() {
+            if let Some(written) = state.written.as_mut() {
+                written.interrupt = true;
+            }
             return Ok(());
-        };
-        if !turn.interrupting {
-            // Flagged only once the request is on the wire: a failed write leaves the
-            // turn as it was, so its end is not misreported and a retry can send again.
-            self.shared.write_line(&interrupt_line(turn.id.0))?;
-            turn.interrupting = true;
         }
-        Ok(())
+        self.shared.interrupt_open(&mut state)
     }
 
     fn terminate(&self) -> Result<(), BackendError> {

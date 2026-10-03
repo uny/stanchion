@@ -939,12 +939,45 @@ change; the origin changes no gate decision. Observed in the application on `cla
 reached the gate under that turn, and ran once allowed. The dialog itself does not say which turn
 asked. Two orderings are accepted rather than solved. An approval request the socket
 thread takes before the reading thread has processed its turn's `init` is still denied at
-the door, which fails closed. And the stream carries nothing that ties a turn to the input
-that caused it: if the CLI starts a turn of its own just as the backend writes an input —
-the user's, or the inbox's, which is written as soon as the previous turn ends — the CLI's
-turn is reported under the input's turn id, and each later turn under the id before it
-until no input is waiting; the approvals themselves are unaffected, since each call is
-asked about by its own command.
+the door, which fails closed. And the stream, as read then, carried nothing that tied a
+turn to the input that caused it, so a turn the CLI started just as the backend wrote an
+input was reported under the input's turn id; #73, below, reads that tie from the stream.
+
+**Each input's turn is read from the stream (#73).** A turn the CLI starts itself and the
+turn answering an input the backend has just written look the same on the stream as
+#63 read it, so when they raced the CLI's turn was reported under the input's id. Measured
+on `claude` 2.1.281 with the spawn arguments the backend uses: an input line that carries
+a `uuid` is reported by `command_lifecycle` lines naming it — `queued` as it is read,
+`started` just before the `init` of the turn it begins, and `completed` (or `cancelled`
+after an error or an interrupt) after that turn's `result` — with or without
+`--replay-user-messages`, and not at all without the `uuid`; `init.capabilities` lists
+`msg_lifecycle_v1`. A turn the CLI started after a background task had no lifecycle line,
+in three sessions. An input read while that turn ran waited for its `result` and then
+began its own turn; an input read while it was inside a call was taken into it after the
+call's result — `started` with no `init`, the model answering the input, one `result` for
+both — as an input read during a caller's turn was. An interrupt left a queued input
+queued, and it ran next. The `--replay-user-messages` echo arrives after `init`, too late
+to open a turn on. So the backend writes every input with a fresh `uuid` and reports its
+turn when the CLI begins it: an `init` right after that input's `started` opens the
+caller's turn, under the id `send` returned; one with no `started`, once a `result` has
+been seen, is the CLI's. Nothing more is written — `Busy`, the inbox held — until the input
+on the wire is resolved, so a CLI turn that runs first is reported as its own and the
+input's turn follows it. An input taken into a turn already open is resolved at once:
+`TurnStarted` for its id and `TurnEnded` with `TurnEnd::Joined { into }`, and what the
+model did with it stays under `into`, since one turn cannot be split on the stream; every
+id `send` returns still gets one `TurnStarted` and one `TurnEnded`. A `cancelled` before
+any `started`, or a `completed` for an input whose turn was not seen to begin, neither
+observed, ends the id `Failed`; an input still waiting when the attachment ends is `Cut`.
+A CLI whose `init` does not list the capability is read as #63 read it. Two things move: a caller's `TurnStarted` arrives with its `init` rather than at
+the write — an inbox message is `Accepted` before its turn starts — and turn ids no longer
+follow the order turns start in. An interrupt while the input is on the wire is held and
+sent as its turn begins, since one the CLI reads first leaves the input queued. Approvals
+are tied as before to the turn open when a request arrives and refused at the door with
+none, so the ordering #63 accepted — a request taken before the reading thread has
+processed its turn's `init` — now covers a caller's turn too, which before opened at the
+write; it still fails closed. Nothing new is reachable from the WebView. The race itself
+was not caught on the real CLI — the input won each time — and is replayed by the fake CLI
+from the orders that were.
 
 **A call to a tool the CLI does not offer is still reported as run (#75).** When the model
 calls a tool the CLI does not have, the CLI answers with an error `tool_result` and runs
