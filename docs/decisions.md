@@ -936,8 +936,8 @@ the user did not start, from refused at the door to asked, and it is the point o
 change; the origin changes no gate decision. Observed in the application on `claude`
 2.1.281: after a background `sleep` finished, the CLI's own turn was reported as a turn;
 `echo` in it ran without asking, as the CLI's rules allow it anywhere, and `touch` asked,
-reached the gate under that turn, and ran once allowed. The dialog itself does not say which turn
-asked. Two orderings are accepted rather than solved. An approval request the socket
+reached the gate under that turn, and ran once allowed. The dialog did not then say which
+turn asked; #78, below, has it say so. Two orderings are accepted rather than solved. An approval request the socket
 thread takes before the reading thread has processed its turn's `init` is still denied at
 the door, which fails closed. And the stream, as read then, carried nothing that tied a
 turn to the input that caused it, so a turn the CLI started just as the backend wrote an
@@ -978,6 +978,28 @@ processed its turn's `init` — now covers a caller's turn too, which before ope
 write; it still fails closed. Nothing new is reachable from the WebView. The race itself
 was not caught on the real CLI — the input won each time — and is replayed by the fake CLI
 from the orders that were.
+
+**The dialog says when the backend started the turn that asked (#78).** A request from a
+turn marked `TurnOrigin::Backend` is shown with `BACKEND_TURN` — "— in a turn the backend
+started on its own" — at the end of its title; one from a caller's turn is shown as before,
+since a caller's turn is either the user's input or an inbox message the caller accepted,
+and "you" would be wrong for the second. The origin is the one `TurnStarted` reported,
+recorded on the open turn and read under the same lock as the turn id a request is tied to,
+so a request cannot carry one turn's id and another's origin; nothing in the request line is
+read for it. It reaches the gate as `TurnStarter` on the CLI request, the one field of a
+`Class` that is neither what runs nor what the model or the user chose, and nothing but what is
+shown depends on it: no policy, token or reply. It does change what is shown, so it counts
+toward the presenter's capacity, and it counts for a caller's turn as well, so the same
+request is within capacity or over it whoever started its turn. A native dialog that lays
+the title out and finds it too tall (`DoesNotFit`) measures what it shows, which the core
+cannot, so at that edge the longer title can still not fit. The suffix holds an em dash, which the escape
+never lets through, so no model-supplied value can show it. Two readings are inherited, not
+added: an input taken into the CLI's turn (`Joined`) leaves that turn the backend's, so a
+call the model makes in answer to the input still says the backend started it, which is
+true of the turn; and the attribution rests on the order #73 measured — `started` before
+`init` — so a CLI that reversed it would show a caller's turn as the backend's. A CLI
+without `msg_lifecycle_v1` reports caller turns as #63 did, and the dialog adds nothing.
+Nothing new is reachable from the WebView: the title it already receives is longer.
 
 **A call to a tool the CLI does not offer is still reported as run (#75).** When the model
 calls a tool the CLI does not have, the CLI answers with an error `tool_result` and runs

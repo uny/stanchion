@@ -45,7 +45,8 @@ pub enum Refusal {
     SessionGrant,
     /// The run the request names is not live.
     UnknownRun,
-    /// The presenter cannot show the request in full.
+    /// The presenter cannot show the request in full. `bytes` is what was measured: for a CLI
+    /// request from a caller's turn it includes the backend-turn suffix the dialog would not show.
     OverCapacity { bytes: usize, capacity: usize },
     /// The presenter laid the request out and it cannot be shown in full.
     DoesNotFit,

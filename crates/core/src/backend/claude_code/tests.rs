@@ -14,7 +14,7 @@ use crate::consent::policy::AlwaysAsk;
 use crate::consent::presenter::{
     Answer, ConsentPresenter, Handle, PresenterError, Rendered, Responder,
 };
-use crate::consent::{Config, Consent};
+use crate::consent::{Config, Consent, BACKEND_TURN};
 
 const FAKE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
 /// The helper the fake is told about and never spawns: the tests here drive the socket
@@ -1240,6 +1240,8 @@ fn a_declined_request_is_denied_and_reported_before_and_after() {
     assert_eq!(*invocation, rendered.invocation);
     assert!(rendered.body.contains("rm -rf /"), "{}", rendered.body);
     assert!(rendered.title.contains("claude-code"), "{}", rendered.title);
+    // The caller started this turn, so the dialog says nothing about who did (#78).
+    assert!(!rendered.title.contains(BACKEND_TURN), "{}", rendered.title);
     assert_eq!(
         all[resolved],
         Event::ApprovalResolved {
@@ -1547,6 +1549,7 @@ fn a_call_in_a_turn_the_cli_starts_reaches_the_gate() {
         e,
         Event::ApprovalRequested { turn: t, call, rendered, .. }
             if *t == theirs && call.0 == "toolu_bg_asked" && rendered.body.contains("echo after")
+                && rendered.title.ends_with(BACKEND_TURN)
     )));
     assert!(matches!(
         got.last(),
@@ -1782,6 +1785,53 @@ fn an_input_taken_into_a_turn_the_cli_started_is_reported_as_joined() {
     );
     // Nothing is left waiting: the next input is taken.
     finished_turn(session.as_ref(), &events);
+}
+
+#[test]
+fn a_call_after_an_input_joined_the_clis_turn_still_says_the_backend_started_it() {
+    let dirs = Dirs::new("join-ask");
+    let events = Arc::new(Recorder::default());
+    let backend = backend(&dirs).env(
+        "FAKE_CLAUDE_JOIN_HOLD",
+        dirs.base.join("release").to_str().unwrap(),
+    );
+    let session = start_with(&backend, &dirs, &events, gate_with(Arc::new(Allows)));
+    let first = finished_turn(session.as_ref(), &events);
+    let mine = session
+        .send(UserInput {
+            text: "join".into(),
+        })
+        .unwrap();
+    let got = events.wait_for(
+        "ToolCall",
+        |e| matches!(e, Event::ToolCall { call, .. } if call.0 == "toolu_join_asked"),
+    );
+    let theirs = backend_turn(&got, first).unwrap();
+    assert!(got.contains(&Event::TurnEnded {
+        turn: mine,
+        end: TurnEnd::Joined { into: theirs },
+    }));
+
+    // The CLI's turn took the user's input in, but it is still the turn the CLI started;
+    // and nothing the request line says about an origin is read.
+    let reply = ask(
+        &socket_of(&dirs, session.as_ref()),
+        r#"{"tool_name":"Bash","input":{"command":"touch joined"},"tool_use_id":"toolu_join_asked","origin":"caller","turn_origin":"caller"}"#,
+    );
+    assert_eq!(reply, r#"{"behavior":"allow"}"#);
+    let got = events.wait_for("ApprovalResolved", |e| {
+        matches!(e, Event::ApprovalResolved { .. })
+    });
+    assert!(got.iter().any(|e| matches!(
+        e,
+        Event::ApprovalRequested { turn: t, rendered, .. }
+            if *t == theirs && rendered.title.ends_with(BACKEND_TURN)
+    )));
+    release(&dirs.base.join("release"));
+    events.wait_for(
+        "the backend's TurnEnded",
+        |e| matches!(e, Event::TurnEnded { turn, .. } if *turn == theirs),
+    );
 }
 
 #[test]
