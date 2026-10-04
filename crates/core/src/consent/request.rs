@@ -31,7 +31,7 @@ impl fmt::Display for InvocationId {
     }
 }
 
-/// Core-issued identity of one run, handed out by [`super::Consent::register_run`].
+/// Core-issued identity of one run, handed out by the gate's crate-private `register_run`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RunId(pub(crate) u64);
 

@@ -14,9 +14,10 @@
 //! # What the type system pins
 //!
 //! The consent rule (`docs/decisions.md`, "Consent is a native dialog the core owns")
-//! has a compile-time half, and these doctests are it. Each one fails on its own
-//! diagnostic, so a fixture that failed for any reason would not pass for one restriction
-//! while proving another. The runtime half is `tests/consent.rs`.
+//! has a compile-time half, and these doctests are it. Each one is written to fail on one
+//! diagnostic, the one its fence names, and calls nothing else that could fail; stable
+//! rustdoc does not compare the code, so the fixture's shape, not the fence, is what keeps
+//! one restriction from passing for another. The runtime half is `consent::tests`.
 //!
 //! A token cannot be constructed outside the gate — its constructor is private:
 //!
@@ -141,6 +142,67 @@
 //!     fn usage(&self) -> Usage { todo!() }
 //! }
 //! ```
+//!
+//! And a holder of the gate — the shell holds one, to build a backend's `Start` — cannot
+//! use it to ask under a run of its own (#54). It cannot open a run:
+//!
+//! ```compile_fail,E0624
+//! use stanchion_core::consent::{request::Backend, Consent};
+//! fn go(gate: &Consent) {
+//!     let _ = gate.register_run(Backend::ClaudeCode);
+//! }
+//! ```
+//!
+//! Nor ask, under any run or none:
+//!
+//! ```compile_fail,E0624
+//! use stanchion_core::consent::{request::RequestSpec, Consent};
+//! fn go(gate: &Consent, spec: RequestSpec) {
+//!     let _ = gate.ask_observed(spec, &mut |_| {});
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! use stanchion_core::consent::{request::RequestSpec, Consent};
+//! fn go(gate: &Consent, spec: RequestSpec) {
+//!     let _ = gate.ask(spec);
+//! }
+//! ```
+//!
+//! Nor through the door a CLI backend asks through:
+//!
+//! ```compile_fail,E0624
+//! use stanchion_core::{consent::{request::RequestSpec, Consent}, execute::{CliApproval, ReplyTransport}};
+//! fn go(gate: &Consent, spec: RequestSpec, transport: &mut dyn ReplyTransport) {
+//!     let _ = CliApproval.resolve_observed(gate, spec, transport, &mut |_| {});
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! use stanchion_core::{consent::{request::RequestSpec, Consent}, execute::{CliApproval, ReplyTransport}};
+//! fn go(gate: &Consent, spec: RequestSpec, transport: &mut dyn ReplyTransport) {
+//!     let _ = CliApproval.resolve(gate, spec, transport);
+//! }
+//! ```
+//!
+//! Nor end a run, or withdraw a request a backend made:
+//!
+//! ```compile_fail,E0624
+//! use stanchion_core::consent::{request::RunId, Consent};
+//! fn go(gate: &Consent, run: RunId) {
+//!     gate.end_run(run);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! use stanchion_core::consent::{request::InvocationId, Consent};
+//! fn go(gate: &Consent, invocation: InvocationId) {
+//!     gate.cancel(invocation);
+//! }
+//! ```
+//!
+//! The `probe` feature opens these doors to the hand-run presenter probe, through
+//! `consent::probe`; the application never enables it.
 
 pub mod backend;
 pub mod consent;

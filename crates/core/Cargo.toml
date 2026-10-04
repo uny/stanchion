@@ -11,6 +11,12 @@ license.workspace = true
 # crate docs. CI enforces the `tauri` half of that: `.github/workflows/build.yml` fails the
 # build if `cargo tree` finds the edge under any target or feature combination.
 # Dev-dependencies are outside that check; everything below this line is inside it.
+[features]
+# Opens the consent gate's crate-private doors (`consent::probe`) to the hand-run presenter
+# probe, `src-tauri/examples/alert_probe.rs`. The application never enables it: in its build
+# a holder of the gate cannot open a run, ask, or withdraw a request (#54).
+probe = []
+
 [dependencies]
 # Content and prior-file hashes bound into a consent token (`consent::request`). A
 # non-cryptographic hash would let a write be substituted for one with a colliding digest.

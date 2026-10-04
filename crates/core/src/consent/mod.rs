@@ -16,6 +16,11 @@ pub mod render;
 pub mod request;
 pub mod token;
 
+#[cfg(feature = "probe")]
+pub mod probe;
+#[cfg(test)]
+mod tests;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
@@ -116,8 +121,10 @@ impl Consent {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Registers a run, so requests can be bound to it and tokens die with it.
-    pub fn register_run(&self, backend: Backend) -> RunId {
+    /// Registers a run, so requests can be bound to it and tokens die with it. Crate-private
+    /// (#54): a run is opened by a backend's [`crate::backend::Attachment`] lease, and a
+    /// holder of the gate outside the crate — the shell — cannot open one of its own.
+    pub(crate) fn register_run(&self, backend: Backend) -> RunId {
         let mut s = self.state();
         s.next_id += 1;
         let id = RunId(s.next_id);
@@ -126,7 +133,7 @@ impl Consent {
     }
 
     /// Ends a run: its pending requests are withdrawn and its tokens are void.
-    pub fn end_run(&self, run: RunId) {
+    pub(crate) fn end_run(&self, run: RunId) {
         let handles = {
             let mut s = self.state();
             s.live_runs.remove(&run);
@@ -146,7 +153,7 @@ impl Consent {
 
     /// Cancels one request. A dialog it has open is dismissed; a token minted for it is
     /// void; an answer that arrives afterwards mints nothing.
-    pub fn cancel(&self, invocation: InvocationId) {
+    pub(crate) fn cancel(&self, invocation: InvocationId) {
         let handle = withdraw_locked(&mut self.state(), invocation);
         self.dismiss_all(handle);
     }
@@ -170,16 +177,21 @@ impl Consent {
             .is_none_or(|p| p.withdrawn)
     }
 
-    /// Asks for consent. Blocks the calling thread until there is an answer or the request
-    /// is withdrawn. `Ok` is the only way a [`ConsentToken`] comes into existence.
-    ///
-    /// Never call this from the thread the presenter needs — a native modal runs on the
-    /// main thread, and a main thread parked here would never open it.
-    pub fn ask(&self, spec: RequestSpec) -> Result<ConsentToken, Refusal> {
+    /// [`Consent::ask_observed`] with no observer. Only the tests ask without one.
+    #[cfg(test)]
+    pub(crate) fn ask(&self, spec: RequestSpec) -> Result<ConsentToken, Refusal> {
         self.ask_observed(spec, &mut |_| {})
     }
 
-    /// [`Consent::ask`], with `observer` called once, on the asking thread, at the moment
+    /// Asks for consent. Blocks the calling thread until there is an answer or the request
+    /// is withdrawn. `Ok` is the only way a [`ConsentToken`] comes into existence. Crate-
+    /// private (#54), like every other way to open, end or withdraw a request: a backend
+    /// asks, and the shell only presents.
+    ///
+    /// Never call this from the thread the presenter needs — a native modal runs on the
+    /// main thread, and a main thread parked here would never open it.
+    ///
+    /// `observer` is called once, on the asking thread, at the moment
     /// the request is pending and about to be presented — with the same [`Rendered`] the
     /// dialog is given, its invocation id included. That is the only way an asker learns
     /// what is being asked before it is answered: the return value names the invocation
@@ -192,7 +204,7 @@ impl Consent {
     /// included, which withdraws the request before it is presented — but not ask.
     ///
     /// [`cancel`]: Consent::cancel
-    pub fn ask_observed(
+    pub(crate) fn ask_observed(
         &self,
         spec: RequestSpec,
         observer: &mut dyn FnMut(&Rendered),

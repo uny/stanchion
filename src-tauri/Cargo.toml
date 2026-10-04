@@ -12,6 +12,15 @@ license.workspace = true
 # the only target, so no staticlib/cdylib output for mobile is built here.
 name = "stanchion_lib"
 
+[features]
+# Builds `examples/alert_probe.rs`, which asks the gate directly; see `probe` in
+# `crates/core/Cargo.toml`. Never part of the application's build.
+probe = ["stanchion-core/probe"]
+
+[[example]]
+name = "alert_probe"
+required-features = ["probe"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
