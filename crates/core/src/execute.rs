@@ -177,11 +177,10 @@ pub trait ReplyTransport {
 pub struct CliApproval;
 
 impl CliApproval {
-    /// Asks the gate and sends exactly one reply: *allow* if a token was minted, *deny*
-    /// otherwise — on decline, on refusal, on presenter failure, on withdrawal. This is
-    /// the entry a CLI transport calls; [`CliApproval::allow`] and [`CliApproval::deny`]
-    /// are its halves.
-    pub fn resolve(
+    /// [`CliApproval::resolve_observed`] with no observer. Only the tests resolve without
+    /// one.
+    #[cfg(test)]
+    pub(crate) fn resolve(
         &self,
         gate: &Consent,
         spec: RequestSpec,
@@ -190,9 +189,13 @@ impl CliApproval {
         self.resolve_observed(gate, spec, transport, &mut |_| {})
     }
 
-    /// [`CliApproval::resolve`] with [`Consent::ask_observed`]'s observer: a backend that
-    /// reports the request as pending before it is answered passes one here.
-    pub fn resolve_observed(
+    /// Asks the gate and sends exactly one reply: *allow* if a token was minted, *deny*
+    /// otherwise — on decline, on refusal, on presenter failure, on withdrawal. This is
+    /// the entry a CLI transport calls; [`CliApproval::allow`] and [`CliApproval::deny`]
+    /// are its halves. `observer` is the gate's `ask_observed` observer: a backend that
+    /// reports the request as pending before it is answered passes one here. Crate-private
+    /// (#54): it asks the gate, which only a backend does.
+    pub(crate) fn resolve_observed(
         &self,
         gate: &Consent,
         spec: RequestSpec,

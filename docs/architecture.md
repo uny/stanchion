@@ -87,9 +87,11 @@ ships, not a plugin surface. Seven items, each a type:
    one reply). Nothing on `Session` takes an answer or exposes the run id, so the code above
    has nothing on a session by which to answer, or to ask under the backend's run;
    `src/lib.rs` shows the missing method's shape in a `compile_fail` doctest beside the
-   token ones, and the lease's constructor is crate-private. Not closed by this: the gate's
-   `register_run` and `ask` are `pub` for the integration tests, so a holder of the gate
-   can open a run of its own and ask under it — narrowing them to the crate is #54.
+   token ones, and the lease's constructor is crate-private. The gate does not hand it out
+   either (#54): opening and ending a run, asking, and withdrawing a request are
+   crate-private, so a holder of the gate — the shell — cannot open a run of its own and
+   ask under it; `src/lib.rs` pins each in a `compile_fail` doctest. A `probe` feature,
+   which the application never enables, opens them to the hand-run presenter probe.
    The resolution is the gate's, as "An IPC message is not consent" already
    requires — a `resolve(decision)` on the backend trait would be `approve(tool_call_id)`
    under another name.

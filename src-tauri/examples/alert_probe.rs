@@ -1,7 +1,7 @@
 //! Drives `NativeAlert` under the real Tauri event loop, with no backend: the half of the
 //! presenter that needs a running application. Run by hand; some scenarios wait for a click.
 //!
-//!     cargo run -p stanchion --example alert_probe -- <scenario>
+//!     cargo run -p stanchion --features probe --example alert_probe -- <scenario>
 //!
 //! Scenarios: `withdraw`, `early`, `queued`, `fit`, `early-click`, `human`, `keys`.
 
@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use stanchion_core::consent::policy::AlwaysAsk;
 use stanchion_core::consent::request::{Backend, ClassSpec, InvocationId, RequestSpec, RunId};
-use stanchion_core::consent::{Config, Consent};
+use stanchion_core::consent::{probe, Config, Consent};
 use stanchion_lib::presenter::NativeAlert;
 
 fn spec(run: RunId, command: &str) -> RequestSpec {
@@ -38,7 +38,7 @@ fn ask(
     let (tx, rx) = mpsc::channel();
     let gate = Arc::clone(gate);
     let join = std::thread::spawn(move || {
-        let result = gate.ask_observed(spec(run, &command), &mut |r| {
+        let result = probe::ask_observed(&gate, spec(run, &command), &mut |r| {
             let _ = tx.send(r.invocation);
         });
         eprintln!(
@@ -145,10 +145,10 @@ fn main() {
                 alert.on_abandon(Arc::new(move |what, invocation| {
                     eprintln!("[{:>5}ms] abandon {what:?}", t0.elapsed().as_millis());
                     let gate = Arc::clone(&gate);
-                    std::thread::spawn(move || gate.cancel(invocation));
+                    std::thread::spawn(move || probe::cancel(&gate, invocation));
                 }));
             }
-            let run = gate.register_run(Backend::Native);
+            let run = probe::register_run(&gate, Backend::Native);
             // A tick the Tauri event loop delivers: does it arrive while an alert is up?
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
@@ -166,12 +166,12 @@ fn main() {
                         let inv = inv.recv().unwrap();
                         at(2000);
                         eprintln!("[{:>5}ms] cancel A", t0.elapsed().as_millis());
-                        gate.cancel(inv);
+                        probe::cancel(&gate, inv);
                         j.join().unwrap();
                     }
                     "early" => {
                         let (inv, j) = ask(&gate, run, "echo early".into(), t0, "A");
-                        gate.cancel(inv.recv().unwrap());
+                        probe::cancel(&gate, inv.recv().unwrap());
                         j.join().unwrap();
                         at(1000);
                     }
@@ -183,11 +183,11 @@ fn main() {
                         let b = b.recv().unwrap();
                         at(1700);
                         eprintln!("[{:>5}ms] cancel A", t0.elapsed().as_millis());
-                        gate.cancel(a);
+                        probe::cancel(&gate, a);
                         ja.join().unwrap();
                         at(2000);
                         eprintln!("[{:>5}ms] cancel B", t0.elapsed().as_millis());
-                        gate.cancel(b);
+                        probe::cancel(&gate, b);
                         jb.join().unwrap();
                     }
                     "fit" => {
@@ -200,7 +200,7 @@ fn main() {
                             // cancel. Too tall once laid out: announced, then refused.
                             if let Ok(inv) = inv.recv() {
                                 at(1500);
-                                gate.cancel(inv);
+                                probe::cancel(&gate, inv);
                             }
                             j.join().unwrap();
                         }

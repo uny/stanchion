@@ -12,18 +12,21 @@
 //! # What the trait does not carry
 //!
 //! **An approval decision, or a way to reach one.** A backend receives the consent gate at
-//! [`Start`] and asks it itself — on a CLI backend through
-//! [`crate::execute::CliApproval::resolve`], which owes the CLI exactly one reply. Upward
+//! [`Start`] and asks it itself — on a CLI backend through `CliApproval::resolve_observed`,
+//! which owes the CLI exactly one reply. Upward
 //! it emits [`Event::ApprovalRequested`] for display, and nothing on [`Session`] takes an
 //! answer or hands out the consent run id, so the code above — the shell, the WebView
 //! behind it — has no handle on a session by which to approve, or by which to ask the
 //! gate under the backend's run. `crates/core/src/lib.rs` shows the shape of the method
 //! that does not exist in a `compile_fail` doctest beside the token ones (a doctest can
 //! pin one name, not the absence of a capability; the trait is the pin); the run id is
-//! held by the [`Attachment`] lease, which only this crate constructs. What this does
-//! *not* close: [`Consent::register_run`] and [`Consent::ask`] are `pub` for the
-//! integration tests, so a holder of the gate can still open a run of its own and ask
-//! under it. Narrowing them to the crate is #54, which moves those tests in-crate.
+//! held by the [`Attachment`] lease, which only this crate constructs. Nor does the gate
+//! itself hand the code above a way in (#54): opening or ending a run, asking, and
+//! withdrawing a request are crate-private, so a holder of the gate — the shell holds one,
+//! to build a [`Start`] — cannot open a run of its own and ask under it, nor reach a
+//! backend's run through one registered on a second gate. `crates/core/src/lib.rs` pins
+//! each of those doors in a `compile_fail` doctest. The `probe` feature opens them to a
+//! hand-run presenter probe; the application never enables it.
 //!
 //! **A runtime.** Events reach the caller through an [`EventSink`] it supplies, on whatever
 //! thread the backend delivers from, as the presenter does for consent. Whether a backend

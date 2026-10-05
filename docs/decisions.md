@@ -820,14 +820,10 @@ as the presenter does, and a threaded and an executor-driven implementation both
 Claude Code slice decides for itself and says why (it chose threads; the reasons are in
 `crates/core/src/backend/claude_code`, and they are that backend's, not the contract's). Whether hook failure, which #42 measured
 as silent and fail-open, can be made to surface as `RanWithoutAsking` at all, or only as a
-`--debug` log the core tails, is the same slice's to measure. And the gate's own surface is
-wider than the session's: `Consent::register_run` and `Consent::ask` are `pub` because the
-integration tests in `crates/core/tests` drive the gate directly, so a holder of the gate
-can open a run of its own and ask under it — a dialog labelled with a backend the shell
-chose — and, since run ids are the gate's own counter, name a backend's run through one
-registered on a second gate. The session surface does not hand any of that out, but the
-gate does; narrowing it to the crate means moving those tests in-crate, and is a follow-up
-rather than this entry (#54).
+`--debug` log the core tails, is the same slice's to measure. The gate's own surface was
+wider than the session's when this entry was written — `Consent::register_run` and
+`Consent::ask` were `pub` for the integration tests — and #54 has since narrowed it; see
+"The gate's doors are the crate's (#54)" below.
 
 *What "two accounts at once" is at the core's level* (the slice after the approval one):
 two `AccountId`s on one backend and one gate, each a config directory of its own under
@@ -1023,6 +1019,35 @@ result is an error, its text is that refusal naming the call's own tool, and tha
 absent from its turn's `init.tools`; its `ToolCall` and `ToolResult` events stay as they
 are. Calls a subagent makes arrive on the stream with `parent_tool_use_id` set and are
 reconciled with the turn's own.
+
+**The gate's doors are the crate's (#54).** The shell holds the gate, since a backend's
+`Start` carries it, and until this change every way to open a request was `pub` on it: a
+holder could `register_run` with a backend of its choosing and `ask` under that run — a
+dialog labelled with a backend the shell picked, and a token it could redeem through
+`execute` with no session involved — and, run ids being the gate's own counter, take one
+from a second, throwaway gate that equals a backend's run on the real one. Now
+`register_run`, `end_run`, `ask_observed` and `cancel` on `Consent`, and
+`CliApproval::resolve_observed`, which asks the gate on a CLI backend's behalf, are
+`pub(crate)`; `Consent::ask` and `CliApproval::resolve`, the observer-free forms only the
+tests use, exist only under `cfg(test)`. Closing `ask` alone would have left the same
+request reachable through `CliApproval::resolve`, and `cancel` is closed with them because
+the shell sees every invocation id it presents and could otherwise withdraw a backend's
+request; that goes beyond what #54 named. `Consent::new` stays `pub`, as do the doors that
+take a token, which nothing outside the crate can now obtain in the application's build.
+`crates/core/src/lib.rs` pins each closed door in a `compile_fail` doctest, each calling
+that one door and nothing else, since stable rustdoc does not compare error codes; each was
+checked by reopening the doors and watching all seven fail. The gate's runtime suite moved
+from `crates/core/tests` to `crates/core/src/consent/tests.rs` unchanged, through the same
+doors and public paths, not private fields. One caller outside the crate needed them: the
+hand-run presenter probe, `src-tauri/examples/alert_probe.rs`, which drives the native alert
+with no backend. A `probe` feature, off by default and never enabled by the application,
+exposes the three it uses through `consent::probe`, and the example requires it; CI lints
+the example with the feature on, since `--all-targets` skips an example whose features are
+off, and fails if the application's own build enables it — checked with it off, on the
+command line, and in the shell's default features. What this narrows is direct use of the
+gate. It does not take the shell out of approvals: it is still the presenter that reports a
+click, `Session::interrupt` and `terminate` still end a turn or a run, and a `Policy` still
+sees each `Request`, its run id included.
 
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that

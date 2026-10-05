@@ -104,7 +104,7 @@ impl Responder {
     /// The byte bound in [`ConsentPresenter::capacity`] is checked before `show`; this is
     /// the check only the laid-out dialog can make — line breaks, wrapping, the screen it
     /// is on. The request is refused as the byte bound refuses it, with one difference: this
-    /// comes after [`crate::consent::Consent::ask_observed`] has told its observer.
+    /// comes after the gate's `ask_observed` has told its observer.
     pub fn does_not_fit(mut self) {
         self.answered = true;
         let _ = self.tx.send(Outcome::DoesNotFit);

@@ -1,7 +1,9 @@
 //! The runtime half of the consent rule, against a fake presenter that records what it was
 //! shown. One test per clause of "How this is tested, and where" in `docs/decisions.md`
 //! under "Consent is a native dialog the core owns". The compile-time half is the
-//! `compile_fail` doctests in `src/lib.rs`.
+//! `compile_fail` doctests in `src/lib.rs`. It lives in the crate because the gate's doors
+//! are crate-private (#54); it reaches the gate through those doors and the public paths
+//! below, never through a private field.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -9,17 +11,17 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use stanchion_core::consent::policy::{AlwaysAsk, Policy, Refusal, Tier};
-use stanchion_core::consent::presenter::{
+use crate::consent::policy::{AlwaysAsk, Policy, Refusal, Tier};
+use crate::consent::presenter::{
     Answer, ConsentPresenter, Handle, PresenterError, Rendered, Responder,
 };
-use stanchion_core::consent::render::{escape, unescape};
-use stanchion_core::consent::request::{
+use crate::consent::render::{escape, unescape};
+use crate::consent::request::{
     Backend, Binding, ClassSpec, InlineProfile, Program, Request, RequestSpec, RunId, TurnStarter,
 };
-use stanchion_core::consent::token::Origin;
-use stanchion_core::consent::{Config, Consent, AFFIRMATIVE, BACKEND_TURN, NEGATIVE};
-use stanchion_core::execute::{
+use crate::consent::token::Origin;
+use crate::consent::{Config, Consent, AFFIRMATIVE, BACKEND_TURN, NEGATIVE};
+use crate::execute::{
     Bridge, BridgeSink, CliApproval, ExecutionSink, NativeExecutor, Reply, ReplyTransport, RunSink,
     RunStarter, SettingsChange, SettingsStore, SettingsWriter,
 };
