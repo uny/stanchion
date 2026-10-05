@@ -53,8 +53,15 @@ jobs:
       # `probe` opens the consent gate's crate-private doors (#54). The probe may have it;
       # the application's own build must not.
       - name: Assert the application does not enable the probe feature
+        # The tree is captured first so that a failing `cargo tree` fails the step instead of
+        # leaving `grep` nothing to match; the `default` line proves the format still parses.
         run: |
-          if cargo tree --locked -p stanchion -e features -i stanchion-core | grep -q 'stanchion-core feature "probe"'; then
+          tree=$(cargo tree --locked -p stanchion -e features --target all -i stanchion-core)
+          if ! grep -q 'stanchion-core feature "default"' <<<"$tree"; then
+            echo "cargo tree did not list stanchion-core's features; this check matches nothing" >&2
+            exit 1
+          fi
+          if grep -q 'stanchion-core feature "probe"' <<<"$tree"; then
             echo "the application's build enables stanchion-core's probe feature" >&2
             exit 1
           fi
