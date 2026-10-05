@@ -1033,21 +1033,21 @@ tests use, exist only under `cfg(test)`. Closing `ask` alone would have left the
 request reachable through `CliApproval::resolve`, and `cancel` is closed with them because
 the shell sees every invocation id it presents and could otherwise withdraw a backend's
 request; that goes beyond what #54 named. `Consent::new` stays `pub`, as do the doors that
-take a token, which nothing outside the crate can now obtain. `crates/core/src/lib.rs` pins
-each closed door in a `compile_fail` doctest, each calling that one door and nothing else,
-since stable rustdoc does not compare error codes; each was checked by reopening the doors
-and watching all seven fail. The gate's runtime suite moved from `crates/core/tests` to
-`crates/core/src/consent/tests.rs` unchanged, through the same doors and public paths,
-not private fields. One caller outside the crate needed them: the hand-run presenter probe,
-`src-tauri/examples/alert_probe.rs`, which drives the native alert with no backend. A
-`probe` feature, off by default and never enabled by the application, exposes the three
-it uses through `consent::probe`, and the example requires it; CI lints the example with
-the feature on, since `--all-targets` skips an example whose features are off, and fails
-if the application's own build enables it — checked with it off, on the command line, and
-in the shell's default features. What this
-narrows is direct use of the gate. It does not take the shell out of approvals: it is
-still the presenter that reports a click, `Session::interrupt` and `terminate` still end a
-turn or a run, and a `Policy` still sees each `Request`, its run id included.
+take a token, which nothing outside the crate can now obtain in the application's build.
+`crates/core/src/lib.rs` pins each closed door in a `compile_fail` doctest, each calling
+that one door and nothing else, since stable rustdoc does not compare error codes; each was
+checked by reopening the doors and watching all seven fail. The gate's runtime suite moved
+from `crates/core/tests` to `crates/core/src/consent/tests.rs` unchanged, through the same
+doors and public paths, not private fields. One caller outside the crate needed them: the
+hand-run presenter probe, `src-tauri/examples/alert_probe.rs`, which drives the native alert
+with no backend. A `probe` feature, off by default and never enabled by the application,
+exposes the three it uses through `consent::probe`, and the example requires it; CI lints
+the example with the feature on, since `--all-targets` skips an example whose features are
+off, and fails if the application's own build enables it — checked with it off, on the
+command line, and in the shell's default features. What this narrows is direct use of the
+gate. It does not take the shell out of approvals: it is still the presenter that reports a
+click, `Session::interrupt` and `terminate` still end a turn or a run, and a `Policy` still
+sees each `Request`, its run id included.
 
 **Rules out:** any method on a backend or a session that takes an approval decision; a
 session id stored without the account and workspace it was created under, or a resume that
