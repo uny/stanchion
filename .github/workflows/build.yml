@@ -95,8 +95,11 @@ jobs:
 
       # --all-targets above compiles test targets but never runs them. This runs the
       # consent gate's runtime suite (crates/core/src/consent/tests.rs), the `compile_fail`
-      # doctests in crates/core/src/lib.rs that pin the token's type-level guarantees, and
-      # the shell's capability and button-order checks (src-tauri/src/presenter.rs).
+      # doctests in crates/core/src/lib.rs that pin the token's type-level guarantees, the
+      # shell's capability and button-order checks (src-tauri/src/presenter.rs), and the
+      # check that every application command is registered, listed in build.rs and granted
+      # to the main window (src-tauri/src/acl.rs) — the gate AGENTS.md section 5 relies on,
+      # since nothing here launches the app.
       - name: Test the workspace
         run: cargo test --locked --workspace
 

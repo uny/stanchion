@@ -4,9 +4,10 @@ fn main() {
     // globs that directory on its own, so either one alone keeps the application command ACL
     // closed. See AGENTS.md section 5 for what it actually takes to reopen it.
     //
-    // Every command in `invoke_handler!` belongs in this list, and each one also needs the
+    // Every command in `generate_handler!` belongs in this list, and each one also needs the
     // matching `allow-` identifier in `capabilities/default.json` — a widening that
-    // AGENTS.md section 5 requires the pull request to state.
+    // AGENTS.md section 5 requires the pull request to state. The test in `src/acl.rs`
+    // fails when the three disagree; it reads this list as a literal.
     let attributes =
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
             "core_version",

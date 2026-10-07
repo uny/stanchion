@@ -2898,6 +2898,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation",
  "serde",
+ "serde_json",
  "stanchion-core",
  "tauri",
  "tauri-build",

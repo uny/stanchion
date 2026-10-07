@@ -65,3 +65,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSObject",
     "NSString",
 ] }
+
+[dev-dependencies]
+# `acl`'s test reads the permission manifest `tauri-build` wrote. Tests only.
+serde_json = "1"
