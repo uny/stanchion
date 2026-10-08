@@ -191,10 +191,13 @@ exemption grants it nothing new.
 
 - **A second Tauri-managed webview** — another window, or a child webview — is a security
   change (AGENTS.md section 5) and may carry only this application's own frontend code.
-  Content the core did not write — model-generated HTML, a page from the network — never goes
-  into one, however empty its capability, because the ACL does not cover this command. Even
-  with trusted content it is a second place where an injection drains the whole map, and its
-  pull request says so.
+  Content the core did not write — model-generated HTML, a page from the network — never
+  goes into one, however empty its capability, because the ACL does not cover this command.
+  Even with trusted content it is a second place where an injection drains the whole map,
+  and its pull request says so. The webview a `window.open` or `target=_blank` opens counts:
+  an `on_new_window` handler answering `Allow` has wry build it from a copy of the opener's
+  configuration, IPC included, and one answering `Create` supplies a Tauri webview. The
+  application sets no such handler, and with none wry denies the request on macOS.
 - **The main webview never leaves the local origin.** Nothing in it can navigate today, but
   nothing stops a navigation either: Tauri's default handler asks plugins only, the
   application sets none, and the CSP does not govern a top-level navigation. A foreign page
@@ -215,25 +218,30 @@ exemption grants it nothing new.
 A native window or a native text view is outside the rule: #68's host window for a sheet,
 and #50's presenter if it is a text view rather than a webview.
 
-**Rejected: keeping sensitive payloads off channels while a second window exists.** There is
-no non-sensitive subset to keep: any event can carry the user's code, a tool's arguments or
-its output. And the size that decides whether a payload is parked is an upstream constant,
-not a boundary this project draws.
+**Rejected: keeping sensitive payloads off channels while a second window exists.** What
+would stay is bookkeeping — turn starts, usage counts — while messages, tool calls and their
+results, and approval requests carry the user's code, a tool's arguments or its output, so
+keeping those off channels means moving the conversation itself off them. And the size that
+decides whether a payload is parked is an upstream constant, not a boundary this project
+draws.
 
 **Rejected: keeping every payload under the threshold** — chunking, or delivering by
-evaluation through `App::channel_interceptor`. It holds only as long as two upstream constants
-do, and outside macOS ordinary command responses may take the same channel path
-(`tauri/src/ipc/protocol.rs`), which an event-level measure does not touch.
+evaluation through `tauri::Builder::channel_interceptor`. Chunking holds only as long as two
+upstream constants do. The interceptor runs before the size check, so it does not depend on
+them, but it covers only channels the frontend passed in: outside macOS ordinary command
+responses may take the same parking path through `Channel::from_callback_fn`
+(`tauri/src/ipc/protocol.rs`), which never consults it, and neither measure touches that.
 
 **Rejected: carrying a patch.** A fork of Tauri's IPC to rebase on every update, for an
 exposure the rule above keeps unreachable. The upstream TODO is neither a fix nor a date.
 
-**What holds this, and what does not.** `src-tauri/src/acl.rs` asserts that the configuration
-declares exactly the `main` window, so a second window added to `tauri.conf.json` fails a
-test. A window or webview built in code, a navigation, and the exemption itself are checked by
-nothing; they rest on review under AGENTS.md section 5. Re-read the exemption and the
-channel's queue on any update of `tauri`, `tauri-runtime-wry`, `wry` or `@tauri-apps/api`,
-which the root `Cargo.lock` and `pnpm-lock.yaml` pin.
+**What holds this, and what does not.** `src-tauri/src/acl.rs` asserts that the
+configuration declares exactly the `main` window, so a second window added to
+`tauri.conf.json` fails a test. A window or webview built in code or opened by a new-window
+handler, a navigation, and the exemption itself are checked by nothing; they rest on review
+under AGENTS.md section 5. Re-read the exemption and the channel's queue on any update of
+`tauri`, `tauri-runtime-wry`, `wry` or `@tauri-apps/api`, which the root `Cargo.lock` and
+`pnpm-lock.yaml` pin.
 
 **Rules out:** model-generated or network content in any webview Tauri injects its IPC into;
 the main webview navigating to a non-local origin; a remote-origin capability; an iframe as
@@ -656,11 +664,11 @@ against the WebView's rendering, so a compromised WebView could show one diff wh
 request carries another. A core-owned presenter that renders a diff — a second window whose
 content is core-generated escaped text, or a native text view — is #50, a blocker for #17
 rather than a follow-up, and as a Tauri webview it falls under the #25 rule above (its own
-code only, and a security change) where a native text view does not. It gates the CLI
-backend's write cells too: a write Claude Code delegates through its permission tool, or a
-Codex `requestApproval` on a write, lands in the same presenter and is refused until #50
-exists, so #46's done-when either excludes writes or waits on it. Shell commands, MCP server
-entries, credential provider commands and gateway URLs usually fit the modal; the capacity
+code rendering text the core wrote, and a security change) where a native text view does
+not. It gates the CLI backend's write cells too: a write Claude Code delegates through its
+permission tool, or a Codex `requestApproval` on a write, lands in the same presenter and is
+refused until #50 exists, so #46's done-when either excludes writes or waits on it. Shell
+commands, MCP server entries, credential provider commands and gateway URLs usually fit the modal; the capacity
 decides, not the class.
 
 **Presenter rules.** The affirmative is never the default button: the WebView decides *when*
