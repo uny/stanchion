@@ -46,11 +46,16 @@ fn rust_files(dir: &Path, out: &mut Vec<(String, String)>) {
     }
 }
 
-/// Lines with `//` comments removed, so a mention in prose is not a registration. A `/*`
-/// comment is not removed; the readers below refuse one where it could hide an entry.
+/// Lines with `//` comments removed, so a mention in prose is not a registration. A `//`
+/// after an odd number of quotes may sit inside a string, so that line is kept whole: a
+/// needle after it is then counted rather than hidden. A `/*` comment is not removed; the
+/// readers below refuse one where it could hide an entry.
 fn code(text: &str) -> String {
     text.lines()
-        .map(|line| line.split("//").next().unwrap_or(""))
+        .map(|line| match line.split_once("//") {
+            Some((before, _)) if before.matches('"').count() % 2 == 0 => before,
+            _ => line,
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -109,7 +114,7 @@ fn annotated() -> BTreeSet<String> {
             } else {
                 lines
                     .by_ref()
-                    .find(|l| !l.starts_with("#[") && !l.starts_with("///"))
+                    .find(|l| !l.is_empty() && !l.starts_with("#[") && !l.starts_with("//"))
                     .unwrap_or_else(|| panic!("{file}: `{line}` is followed by no item"))
             };
             let name = decl
@@ -136,15 +141,14 @@ fn registered() -> BTreeSet<String> {
     once(&files, "invoke_handler");
     once(&files, "generate_handler");
     let lib = code(LIB_RS);
+    // Anywhere in the file, not only inside the list: a `/*` around the whole
+    // `.invoke_handler(...)` call would leave every entry readable and none installed.
+    assert!(!lib.contains("/*"), "src/lib.rs holds a `/*` comment");
     let block = lib
         .split("tauri::generate_handler![")
         .nth(1)
         .expect("src/lib.rs has the `tauri::generate_handler![`");
     let block = block.split(']').next().expect("generate_handler! closes");
-    assert!(
-        !block.contains("/*"),
-        "generate_handler! holds a `/*` comment"
-    );
     let mut names = BTreeSet::new();
     for path in block.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         let name = path.rsplit("::").next().unwrap_or(path);
@@ -161,12 +165,12 @@ fn registered() -> BTreeSet<String> {
 fn listed() -> BTreeSet<String> {
     once(&[("build.rs".into(), BUILD_RS.into())], "commands(");
     let build = code(BUILD_RS);
+    assert!(!build.contains("/*"), "build.rs holds a `/*` comment");
     let list = build
         .split(".commands(&[")
         .nth(1)
         .expect("build.rs passes `.commands(&[...])` a literal list");
     let list = list.split(']').next().expect("the list closes");
-    assert!(!list.contains("/*"), "build.rs's list holds a `/*` comment");
     let mut names = BTreeSet::new();
     for item in list.split(',').map(str::trim).filter(|i| !i.is_empty()) {
         let name = item
