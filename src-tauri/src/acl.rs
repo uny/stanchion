@@ -46,7 +46,8 @@ fn rust_files(dir: &Path, out: &mut Vec<(String, String)>) {
     }
 }
 
-/// Lines with `//` comments removed, so a mention in prose is not a registration.
+/// Lines with `//` comments removed, so a mention in prose is not a registration. A `/*`
+/// comment is not removed; the readers below refuse one where it could hide an entry.
 fn code(text: &str) -> String {
     text.lines()
         .map(|line| line.split("//").next().unwrap_or(""))
@@ -58,12 +59,38 @@ fn ident(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Asserts `needle` occurs exactly once across `files`' code, so that a second call — in
+/// another file, or spelled as a path rather than a method — cannot go unread.
+fn once(files: &[(String, String)], needle: &str) {
+    let hits: Vec<_> = files
+        .iter()
+        .flat_map(|(file, text)| std::iter::repeat_n(file, code(text).matches(needle).count()))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "expected `{needle}` once, found it in {hits:?}"
+    );
+}
+
 /// Every function carrying `#[tauri::command]`, by the name Tauri registers it under.
 fn annotated() -> BTreeSet<String> {
     let mut files = Vec::new();
     rust_files(Path::new(SRC), &mut files);
     let mut names = BTreeSet::new();
     for (file, text) in files {
+        // Any other spelling — `cfg_attr(.., tauri::command)`, an imported `#[command]` —
+        // would apply the attribute without this reader seeing it.
+        let lines_with_it = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("#[tauri::command"))
+            .count();
+        assert!(
+            code(&text).matches("tauri::command").count() == lines_with_it
+                && !text.lines().any(|l| l.trim().starts_with("#[command")),
+            "{file} names `tauri::command` other than as a line-leading `#[tauri::command]`"
+        );
         let mut lines = text.lines().map(str::trim);
         while let Some(line) = lines.next() {
             if !line.starts_with("#[tauri::command") {
@@ -76,10 +103,14 @@ fn annotated() -> BTreeSet<String> {
                 !args.contains("rename"),
                 "{file}: `{line}` renames a command, which this check does not read"
             );
-            let decl = lines
-                .by_ref()
-                .find(|l| !l.starts_with("#[") && !l.starts_with("///"))
-                .unwrap_or_else(|| panic!("{file}: `{line}` is followed by no item"));
+            let decl = if line.contains("fn ") {
+                line
+            } else {
+                lines
+                    .by_ref()
+                    .find(|l| !l.starts_with("#[") && !l.starts_with("///"))
+                    .unwrap_or_else(|| panic!("{file}: `{line}` is followed by no item"))
+            };
             let name = decl
                 .split("fn ")
                 .nth(1)
@@ -101,28 +132,18 @@ fn registered() -> BTreeSet<String> {
     rust_files(Path::new(SRC), &mut files);
     // `Builder::invoke_handler` replaces the previous handler, so a second one would make
     // this list a lie rather than an addition.
-    let handlers: Vec<_> = files
-        .iter()
-        .flat_map(|(file, text)| {
-            let count = code(text).matches(".invoke_handler(").count();
-            std::iter::repeat_n(file, count)
-        })
-        .collect();
-    assert_eq!(
-        handlers.len(),
-        1,
-        "expected one `.invoke_handler(`: {handlers:?}"
-    );
+    once(&files, "invoke_handler");
+    once(&files, "generate_handler");
     let lib = code(LIB_RS);
-    let mut blocks = lib.split("tauri::generate_handler![").skip(1);
-    let block = blocks
-        .next()
-        .expect("src/lib.rs has a `tauri::generate_handler![`");
-    assert!(
-        blocks.next().is_none(),
-        "src/lib.rs has two `generate_handler!`"
-    );
+    let block = lib
+        .split("tauri::generate_handler![")
+        .nth(1)
+        .expect("src/lib.rs has the `tauri::generate_handler![`");
     let block = block.split(']').next().expect("generate_handler! closes");
+    assert!(
+        !block.contains("/*"),
+        "generate_handler! holds a `/*` comment"
+    );
     let mut names = BTreeSet::new();
     for path in block.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         let name = path.rsplit("::").next().unwrap_or(path);
@@ -137,13 +158,14 @@ fn registered() -> BTreeSet<String> {
 
 /// The string literals in `build.rs`'s `commands(&[...])`.
 fn listed() -> BTreeSet<String> {
+    once(&[("build.rs".into(), BUILD_RS.into())], "commands(");
     let build = code(BUILD_RS);
-    let mut calls = build.split(".commands(&[").skip(1);
-    let list = calls
-        .next()
+    let list = build
+        .split(".commands(&[")
+        .nth(1)
         .expect("build.rs passes `.commands(&[...])` a literal list");
-    assert!(calls.next().is_none(), "build.rs calls `.commands(` twice");
     let list = list.split(']').next().expect("the list closes");
+    assert!(!list.contains("/*"), "build.rs's list holds a `/*` comment");
     let mut names = BTreeSet::new();
     for item in list.split(',').map(str::trim).filter(|i| !i.is_empty()) {
         let name = item
@@ -224,6 +246,18 @@ fn every_command_is_registered_listed_defined_and_reachable_from_the_window() {
     // public check the IPC boundary itself runs. Pinned by Cargo.lock, so a Tauri update
     // that moves either breaks this test's build rather than its meaning.
     let mut context = crate::context();
+    let windows: Vec<_> = context
+        .config()
+        .app
+        .windows
+        .iter()
+        .map(|w| &w.label)
+        .collect();
+    assert_eq!(
+        windows,
+        [WINDOW],
+        "this check asks about the `{WINDOW}` window only"
+    );
     let authority = context.runtime_authority_mut();
     let unreachable: Vec<_> = registered
         .iter()
