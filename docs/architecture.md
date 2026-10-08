@@ -172,7 +172,10 @@ under the per-user temporary directory, chosen for its length against the 104-by
 path limit. The WebView drives a conversation through the commands in
 `src-tauri/src/conversations.rs` and receives every event on a Tauri channel it passed
 when it started the conversation, mirrored field for field in `src-tauri/src/events.rs`;
-the channel is one way, and no command takes an approval. The presenter is a native
+the channel is one way, and no command takes an approval. A large payload on that channel is
+parked where any webview Tauri injects its IPC into could take it, ACL or not, which is why
+such a webview hosts only this application's own frontend and the main one never leaves the
+local origin (`docs/decisions.md`, #25). The presenter is a native
 `NSAlert` the shell runs on the main thread (`src-tauri/src/presenter.rs`; what was
 measured about it is in `docs/decisions.md`): a call Claude Code delegates reaches the
 WebView as `ApprovalRequested`, is answered on the alert, and reaches it again as

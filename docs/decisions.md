@@ -106,7 +106,8 @@ decision:**
   rejected). The ACL has since been switched on, and it still does not close this:
   `plugin:__TAURI_CHANNEL__|fetch` is exempt from the check unconditionally, and it drains an
   application-wide map keyed by a global counter without checking which window is asking, so a
-  second window can steal a payload queued for the first by guessing a sequential id.
+  second window can steal a payload queued for the first by guessing a sequential id. What
+  this project does about it is the #25 entry below: the preview stays outside Tauri's IPC.
   Capabilities also do not stop model-generated HTML fetching remote resources, which takes a
   restrictive CSP; `src-tauri/tauri.conf.json` does set one, but it is global rather than a
   policy for an isolated preview window. Both halves are needed and neither is in place for
@@ -155,6 +156,89 @@ touches no files. Every capability it has is a named IPC command the core can re
 
 **Rules out:** convenience shortcuts that let the frontend call the gateway or the
 filesystem directly. Any change that widens this must say so in its pull request.
+
+## A webview that can reach the IPC hosts only the application's own frontend (#25)
+
+One IPC command is outside the ACL altogether. In `tauri 2.11.5` the rejection branch in
+`tauri/src/webview/mod.rs` skips `plugin:__TAURI_CHANNEL__|fetch` whatever the capabilities
+say and whether or not the caller's origin is local (`// TODO: Remove this special check in
+v3`). A channel payload too large to be evaluated straight into the receiving webview — JSON
+of 8192 bytes or more, raw bytes of 1024 or more (`tauri/src/ipc/channel.rs`) — is parked in
+one application-wide map under an id from a global sequential counter, and `fetch` removes and
+returns whatever sits under the id it is handed, without asking which webview is calling. The
+receiver learns the id from script Tauri evaluates in it and fetches a moment later; a caller
+that guesses the id first gets the payload instead.
+
+Every `ConversationEvent` travels on such a channel (`src-tauri/src/events.rs`), and the
+large ones — tool output, an approval request carrying the command or content it asks about —
+are the parked ones. A theft is two things. It discloses the payload. And it stalls the
+conversation: the JavaScript `Channel` in `@tauri-apps/api` delivers strictly in index order,
+so once one index never arrives, every later event of that conversation, small ones included,
+waits behind it for good. It is not consent forgery: an approval is answered on the native
+presenter, and nothing that authorises execution crosses the IPC (*Consent is a native dialog
+the core owns* below), so what the WebView loses is its record of a decision, not the
+decision.
+
+Today nothing but the intended receiver can make that call. The configuration declares one
+window, `main`; no code builds another window or webview; and the main webview renders events
+as text, with no link, `innerHTML`, markdown rendering or iframe through which it could
+navigate or host foreign content. Script running in it already sees every event, so the
+exemption grants it nothing new.
+
+**Decision.** The property is IPC reachability, not process or window count. A webview reaches
+`fetch` when Tauri's initialisation script runs in it and its configuration carries Tauri's
+`ipc` scheme handler; a view Tauri does not manage has neither. So:
+
+- **A second Tauri-managed webview** — another window, or a child webview — is a security
+  change (AGENTS.md section 5) and may carry only this application's own frontend code.
+  Content the core did not write — model-generated HTML, a page from the network — never goes
+  into one, however empty its capability, because the ACL does not cover this command. Even
+  with trusted content it is a second place where an injection drains the whole map, and its
+  pull request says so.
+- **The main webview never leaves the local origin.** Nothing in it can navigate today, but
+  nothing stops a navigation either: Tauri's default handler asks plugins only, the
+  application sets none, and the CSP does not govern a top-level navigation. A foreign page
+  loaded there is handed even the small payloads directly, which is worse than #25. The first
+  change that renders links or markup in the main webview — a markdown renderer is the likely
+  one — adds a navigation handler refusing non-local origins in the same pull request.
+- **No capability names a remote origin.** The exemption also skips the check that otherwise
+  rejects a non-local caller, so `remote.urls` stays absent from every capability.
+- **An iframe is not a sandbox for foreign content here.** Tauri injects its scripts into the
+  main frame only on macOS but into subframes on Windows, and a same-origin frame reaches its
+  parent's globals on any platform. Whether a frame with an opaque origin is enough has not
+  been measured.
+- **The sandboxed HTML preview lives outside Tauri's IPC** — a separate process, or a view
+  Tauri does not manage (a plain `WKWebView` on macOS) with no script message handler or
+  scheme handler that forwards into the core — in addition to the network restriction the
+  Tauri entry above requires of it.
+
+A native window or a native text view is outside the rule: #68's host window for a sheet,
+and #50's presenter if it is a text view rather than a webview.
+
+**Rejected: keeping sensitive payloads off channels while a second window exists.** There is
+no non-sensitive subset to keep: any event can carry the user's code, a tool's arguments or
+its output. And the size that decides whether a payload is parked is an upstream constant,
+not a boundary this project draws.
+
+**Rejected: keeping every payload under the threshold** — chunking, or delivering by
+evaluation through `App::channel_interceptor`. It holds only as long as two upstream constants
+do, and outside macOS ordinary command responses may take the same channel path
+(`tauri/src/ipc/protocol.rs`), which an event-level measure does not touch.
+
+**Rejected: carrying a patch.** A fork of Tauri's IPC to rebase on every update, for an
+exposure the rule above keeps unreachable. The upstream TODO is neither a fix nor a date.
+
+**What holds this, and what does not.** `src-tauri/src/acl.rs` asserts that the configuration
+declares exactly the `main` window, so a second window added to `tauri.conf.json` fails a
+test. A window or webview built in code, a navigation, and the exemption itself are checked by
+nothing; they rest on review under AGENTS.md section 5. Re-read the exemption and the
+channel's queue on any update of `tauri`, `tauri-runtime-wry`, `wry` or `@tauri-apps/api`,
+which the root `Cargo.lock` and `pnpm-lock.yaml` pin.
+
+**Rules out:** model-generated or network content in any webview Tauri injects its IPC into;
+the main webview navigating to a non-local origin; a remote-origin capability; an iframe as
+the isolation boundary for foreign content; treating an emptied capability or a second window
+as isolation.
 
 ## Credentials are providers with a lifecycle, not strings in a settings field
 
@@ -483,8 +567,9 @@ it may show the pending request and the diff, and it may not answer it.
 **Rejected: a core-issued nonce.** The nonce has to be unreachable from the context that
 renders model output, which means the approval UI and the rendered output live in separate
 contexts. In `tauri 2.11.5` a second window is not that separation: `plugin:__TAURI_CHANNEL__|fetch`
-is exempt from the ACL and drains an application-wide map by a guessable id (#25), so
-isolation is not something this project can currently rely on. The nonce also proves only
+is exempt from the ACL and drains an application-wide map by a guessable id, so
+isolation is not something this project can currently rely on (*A webview that can reach the
+IPC hosts only the application's own frontend*). The nonce also proves only
 that the WebView answered — it says nothing about a request from a CLI subprocess or a
 browser extension unless the answer is routed through the WebView anyway, at which point the
 native dialog is the same shape with one fewer trusted piece. Context isolation and a
@@ -570,7 +655,8 @@ diff reduced to a path and a content hash is a checksum the user cannot check
 against the WebView's rendering, so a compromised WebView could show one diff while the
 request carries another. A core-owned presenter that renders a diff — a second window whose
 content is core-generated escaped text, or a native text view — is #50, a blocker for #17
-rather than a follow-up, and it inherits #25 before it can be a window. It gates the CLI
+rather than a follow-up, and as a Tauri webview it falls under the #25 rule above (its own
+code only, and a security change) where a native text view does not. It gates the CLI
 backend's write cells too: a write Claude Code delegates through its permission tool, or a
 Codex `requestApproval` on a write, lands in the same presenter and is refused until #50
 exists, so #46's done-when either excludes writes or waits on it. Shell commands, MCP server
