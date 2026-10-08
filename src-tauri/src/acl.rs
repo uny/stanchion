@@ -98,7 +98,8 @@ fn annotated() -> BTreeSet<String> {
             }
             // `rename_all` renames arguments; a bare `rename` would rename the command,
             // which this reader does not follow.
-            let args = line.replace("rename_all", "");
+            let attribute = line.split(']').next().unwrap_or(line);
+            let args = attribute.replace("rename_all", "");
             assert!(
                 !args.contains("rename"),
                 "{file}: `{line}` renames a command, which this check does not read"
