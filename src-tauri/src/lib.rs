@@ -11,6 +11,8 @@
 //! One thing the WebView cannot reach at all is an approval: `presenter` is the shell's
 //! half of the consent gate, and its answer never transits IPC.
 
+#[cfg(test)]
+mod acl;
 pub mod assembly;
 pub mod conversations;
 pub mod events;
@@ -27,6 +29,12 @@ use tauri::Manager as _;
 #[tauri::command]
 fn core_version() -> &'static str {
     stanchion_core::version()
+}
+
+/// The application's context, expanded once: `generate_context!` embeds symbols a second
+/// expansion would define again, and `acl`'s test resolves the ACL from this same value.
+fn context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
 }
 
 pub fn run() {
@@ -77,7 +85,7 @@ pub fn run() {
             conversations::terminate_conversation,
             conversations::resume_conversation,
         ])
-        .build(tauri::generate_context!())
+        .build(context())
         .expect("error while building stanchion")
         .run(|app, event| {
             // Before the process exits, not on drop: nothing drops the managed state on

@@ -713,9 +713,10 @@ calling each of the three entry points without one — each asserted on its own 
 since one fixture that fails for any reason proves one restriction, not four; and the token
 is neither `Clone` nor serialisable, since either
 would void "spent on first use" and "does not survive the process" without a runtime test
-noticing. In `src-tauri`: the capability grants no `dialog:` permission, the application
-manifest is non-empty (#24), the button list is built negative-first, and the first-slot
-result maps to decline. The capability assertions are auxiliary — the load-bearing test is
+noticing. In `src-tauri`: the capability grants no `dialog:` permission, every application
+command is registered, listed, defined and reachable from the main window's local origin
+(#24, #30), the button list is built negative-first, and the first-slot result maps to
+decline. The capability assertions are auxiliary — the load-bearing test is
 that every execution entry point demands a token, which the type makes a compile error and
 the fake-presenter tests make a runtime one.
 
