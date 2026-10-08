@@ -668,8 +668,8 @@ code rendering text the core wrote, and a security change) where a native text v
 not. It gates the CLI backend's write cells too: a write Claude Code delegates through its
 permission tool, or a Codex `requestApproval` on a write, lands in the same presenter and is
 refused until #50 exists, so #46's done-when either excludes writes or waits on it. Shell
-commands, MCP server entries, credential provider commands and gateway URLs usually fit the modal; the capacity
-decides, not the class.
+commands, MCP server entries, credential provider commands and gateway URLs usually fit the
+modal; the capacity decides, not the class.
 
 **Presenter rules.** The affirmative is never the default button: the WebView decides *when*
 a request fires and can render "press Return" bait timed to it. On macOS `NSAlert` makes the
